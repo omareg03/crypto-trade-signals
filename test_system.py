@@ -128,6 +128,15 @@ class TestSignalEngine(unittest.TestCase):
         confidences = [s.confidence for s in setups]
         self.assertEqual(confidences, sorted(confidences, reverse=True))
 
+    def test_mean_reversion_rr_guarantee(self):
+        # Test extreme drop triggering oversold mean reversion
+        prices = [100.0 - (i * 1.5) for i in range(30)]
+        setup = self.engine._mean_reversion("EURUSD=X", prices, 0.02)
+        if setup:
+            real_rr = abs(setup.take_profit_1 - setup.entry_price) / abs(setup.entry_price - setup.stop_loss)
+            self.assertGreaterEqual(real_rr, 1.79)
+            self.assertAlmostEqual(real_rr, setup.risk_reward, delta=0.05)
+
 
 class TestRiskManager(unittest.TestCase):
     def setUp(self):
@@ -159,6 +168,53 @@ class TestRiskManager(unittest.TestCase):
         self.assertEqual(res["lot_size"], 0.025)
 
 
+    def test_lot_size_invalid_inputs(self):
+        # Zero distance
+        res_zero = self.rm.calculate_lot_size("BTC-USD", entry=100.0, stop_loss=100.0)
+        self.assertEqual(res_zero["lot_size"], 0.0)
+
+        # Zero or negative entry
+        res_neg_entry = self.rm.calculate_lot_size("BTC-USD", entry=-10.0, stop_loss=50.0)
+        self.assertEqual(res_neg_entry["lot_size"], 0.0)
+
+        # Zero or negative account size
+        res_neg_acc = self.rm.calculate_lot_size("BTC-USD", entry=100.0, stop_loss=90.0, account_size=0.0)
+        self.assertEqual(res_neg_acc["lot_size"], 0.0)
+
+        # Zero or negative risk
+        res_neg_risk = self.rm.calculate_lot_size("BTC-USD", entry=100.0, stop_loss=90.0, risk_pct=0.0)
+        self.assertEqual(res_neg_risk["lot_size"], 0.0)
+
+
+class TestDataEngine(unittest.TestCase):
+    def setUp(self):
+        self.engine = MarketDataEngine()
+
+    def test_cache_logic(self):
+        # Uncached key
+        self.assertFalse(self.engine._is_cache_valid("nonexistent_key", 100))
+
+        # Cached key within TTL
+        self.engine.cache["test_key"] = {"data": {"price": 100}, "timestamp": time.time()}
+        self.assertTrue(self.engine._is_cache_valid("test_key", 100))
+
+        # Expired cache key
+        self.engine.cache["expired_key"] = {"data": {"price": 100}, "timestamp": time.time() - 200}
+        self.assertFalse(self.engine._is_cache_valid("expired_key", 100))
+
+    def test_fetch_single_symbol(self):
+        data = self.engine.fetch_single_symbol("BTC-USD")
+        self.assertIsNotNone(data)
+        self.assertEqual(data["symbol"], "BTC-USD")
+        self.assertGreater(data["price"], 0)
+        self.assertGreaterEqual(len(data["historical_prices"]), 15)
+
+    def test_coinbase_fallback_quote(self):
+        price = self.engine.fetch_coinbase_crypto_price("BTC")
+        self.assertIsNotNone(price)
+        self.assertGreater(price, 1000.0)
+
+
 class TestFlaskEndpoints(unittest.TestCase):
     def setUp(self):
         self.client = app.test_client()
@@ -183,6 +239,14 @@ class TestFlaskEndpoints(unittest.TestCase):
         self.assertIn("signals", data)
         self.assertIn("risk_summary", data)
 
+    def test_api_signals_filtering(self):
+        res_crypto = self.client.get("/api/signals?category=crypto")
+        self.assertEqual(res_crypto.status_code, 200)
+        data = res_crypto.get_json()
+        self.assertEqual(data["status"], "success")
+        for sig in data["signals"]:
+            self.assertEqual(sig["category"], "crypto")
+
     def test_calculate_lot_api(self):
         payload = {
             "symbol": "BTC-USD",
@@ -196,6 +260,19 @@ class TestFlaskEndpoints(unittest.TestCase):
         data = res.get_json()
         self.assertEqual(data["lot_size"], 0.025)
         self.assertEqual(data["risk_usd"], 50.0)
+
+    def test_calculate_lot_api_invalid(self):
+        payload = {
+            "symbol": "BTC-USD",
+            "entry": 0,
+            "stop_loss": 0,
+            "risk_pct": 1.0,
+            "account_size": 5000
+        }
+        res = self.client.post("/api/calculate_lot", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["lot_size"], 0.0)
 
 
 if __name__ == "__main__":

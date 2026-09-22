@@ -187,11 +187,41 @@ def health():
     }), 200
 
 
+def find_available_port(preferred_port: int) -> int:
+    """Find an available port starting with preferred_port."""
+    import socket
+    for p in [preferred_port, 5001, 5050, 8080, 8000]:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("0.0.0.0", p))
+                return p
+            except OSError:
+                continue
+    return preferred_port
+
+
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
+    env_port = os.getenv("PORT")
+    if env_port:
+        port = int(env_port)
+    else:
+        port = find_available_port(5000)
+
+    # Automatically open local browser if launching standalone
+    import webbrowser
+    def _open_browser():
+        time.sleep(1.2)
+        try:
+            webbrowser.open(f"http://127.0.0.1:{port}")
+        except Exception:
+            pass
+    threading.Thread(target=_open_browser, daemon=True).start()
+
     logger.info("=" * 65)
     logger.info("  QUANTUM TRADER WEB DASHBOARD — STANDALONE SERVER")
     logger.info(f"  Local Access:   http://127.0.0.1:{port}")
     logger.info(f"  Network/Mobile: http://0.0.0.0:{port}")
+    if port != 5000:
+        logger.info(f"  (Port 5000 in use by legacy process; bound to port {port})")
     logger.info("=" * 65)
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)

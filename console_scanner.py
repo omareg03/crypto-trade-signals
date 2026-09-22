@@ -35,7 +35,13 @@ class ConsoleTradingDashboard:
     """Rich terminal renderer for trade signals and risk parameters."""
 
     def __init__(self):
-        self.console = Console(width=165)
+        term_width = None
+        try:
+            term_width = os.get_terminal_size().columns
+        except Exception:
+            pass
+        effective_width = max(140, term_width) if term_width else 150
+        self.console = Console(width=effective_width)
 
     @staticmethod
     def _format_price(price: Optional[float]) -> str:
@@ -71,20 +77,20 @@ class ConsoleTradingDashboard:
             title=f"🎯 TOP {min(len(signals), limit)} TRADE SIGNALS",
             box=box.DOUBLE_EDGE,
             border_style="green",
-            title_style="bold green"
+            title_style="bold green",
+            expand=True
         )
-        table.add_column("#", style="dim", width=4, justify="right")
-        table.add_column("Symbol", style="bold white", min_width=18)
-        table.add_column("Category", style="cyan", min_width=12)
-        table.add_column("Direction", min_width=10)
-        table.add_column("Strategy", min_width=18)
-        table.add_column("Confidence", justify="right", min_width=11)
-        table.add_column("Entry", justify="right", min_width=12)
-        table.add_column("Stop", justify="right", min_width=12)
-        table.add_column("TP1", justify="right", min_width=12)
-        table.add_column("R:R", justify="right", min_width=6)
-        table.add_column("Match-Trader", style="magenta", min_width=12)
-        table.add_column("Reasoning", min_width=32)
+        table.add_column("#", style="dim", width=3, justify="right")
+        table.add_column("Symbol", style="bold white", min_width=16)
+        table.add_column("Direction", justify="center", min_width=9)
+        table.add_column("Strategy", min_width=16)
+        table.add_column("Confidence", justify="right", min_width=10)
+        table.add_column("Entry", justify="right", min_width=11)
+        table.add_column("Stop", justify="right", min_width=11)
+        table.add_column("TP1", justify="right", min_width=11)
+        table.add_column("R:R", justify="right", min_width=5)
+        table.add_column("Match-Trader", style="magenta", min_width=11)
+        table.add_column("Reasoning", min_width=25, overflow="fold")
 
         for i, sig in enumerate(signals[:limit], 1):
             # Direction styling
@@ -104,7 +110,6 @@ class ConsoleTradingDashboard:
             table.add_row(
                 str(i),
                 sig.display_name,
-                sig.category.upper(),
                 dir_str,
                 sig.strategy,
                 conf_str,
@@ -113,7 +118,7 @@ class ConsoleTradingDashboard:
                 self._format_price(sig.take_profit_1),
                 f"{sig.risk_reward:.1f}",
                 sig.match_trader_symbol or sig.symbol,
-                sig.reasoning[:55]
+                sig.reasoning
             )
 
         self.console.print(table)

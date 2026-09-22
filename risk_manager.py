@@ -51,21 +51,27 @@ class RiskManager:
         """
         Calculates exact lot size for Match-Trader based on distance to stop loss.
         """
-        acc = account_size or self.account_size
+        acc = account_size if account_size is not None else self.account_size
         risk_usd = acc * (risk_pct / 100.0)
         distance = abs(entry - stop_loss)
-
-        if distance <= 0 or entry <= 0:
-            return {
-                "lot_size": 0.0,
-                "risk_usd": round(risk_usd, 2),
-                "distance": 0.0,
-                "note": "Invalid entry or stop loss"
-            }
 
         meta = config.ASSET_METADATA.get(symbol, {})
         category = meta.get("category", "other")
         mt_sym = meta.get("match_trader", symbol)
+
+        if distance <= 0 or entry <= 0 or stop_loss <= 0 or acc <= 0 or risk_pct <= 0:
+            return {
+                "symbol": symbol,
+                "match_trader_symbol": mt_sym,
+                "category": category,
+                "entry": round(entry, 5) if entry else 0.0,
+                "stop_loss": round(stop_loss, 5) if stop_loss else 0.0,
+                "distance": round(distance, 5) if distance else 0.0,
+                "risk_pct": risk_pct,
+                "risk_usd": 0.0,
+                "lot_size": 0.0,
+                "rule_status": "INVALID: Entry, stop loss, account size and risk must be positive non-zero values"
+            }
 
         # Match-Trader asset contract specifications
         if category == "forex":
@@ -106,11 +112,11 @@ class RiskManager:
         elif category == "crypto":
             # Crypto CFD on Match-Trader: 1 lot = 1 coin for BTC/ETH, or units
             lot = risk_usd / distance
-            lot = round(max(0.001, lot), 3)
+            lot = round(max(0.001, min(25.0, lot)), 3)
 
         else:
             # Equities: shares = risk_usd / distance
-            lot = round(risk_usd / distance, 2)
+            lot = round(max(0.01, min(500.0, risk_usd / distance)), 2)
 
         return {
             "symbol": symbol,

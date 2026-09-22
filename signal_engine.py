@@ -72,8 +72,10 @@ class SignalEngine:
             confidence = min(96, int(72 + (35.0 - rsi_val) * 1.6))
             stop_dist = max(current * vol_pct, current - lower_bb * 0.985)
             stop_loss = current - stop_dist
-            tp1 = mid_bb if mid_bb > current else current + (stop_dist * 1.8)
-            tp2 = upper_bb if upper_bb > tp1 else current + (stop_dist * 2.8)
+            min_tp1 = current + (stop_dist * 1.8)
+            tp1 = max(min_tp1, mid_bb)
+            min_tp2 = current + (stop_dist * 2.8)
+            tp2 = max(min_tp2, upper_bb)
             rr = round(abs(tp1 - current) / max(1e-6, abs(current - stop_loss)), 2)
 
             return TradeSetup(
@@ -87,7 +89,7 @@ class SignalEngine:
                 stop_loss=round(stop_loss, 5),
                 take_profit_1=round(tp1, 5),
                 take_profit_2=round(tp2, 5),
-                risk_reward=max(1.5, rr),
+                risk_reward=rr,
                 reasoning=f"RSI oversold ({rsi_val:.1f}), bounced off lower BB ({lower_bb:.2f})",
                 match_trader_symbol=mt_sym
             )
@@ -97,8 +99,10 @@ class SignalEngine:
             confidence = min(96, int(72 + (rsi_val - 65.0) * 1.6))
             stop_dist = max(current * vol_pct, upper_bb * 1.015 - current)
             stop_loss = current + stop_dist
-            tp1 = mid_bb if mid_bb < current else current - (stop_dist * 1.8)
-            tp2 = lower_bb if lower_bb < tp1 else current - (stop_dist * 2.8)
+            min_tp1 = current - (stop_dist * 1.8)
+            tp1 = min(min_tp1, mid_bb)
+            min_tp2 = current - (stop_dist * 2.8)
+            tp2 = min(min_tp2, lower_bb)
             rr = round(abs(current - tp1) / max(1e-6, abs(stop_loss - current)), 2)
 
             return TradeSetup(
@@ -112,7 +116,7 @@ class SignalEngine:
                 stop_loss=round(stop_loss, 5),
                 take_profit_1=round(tp1, 5),
                 take_profit_2=round(tp2, 5),
-                risk_reward=max(1.5, rr),
+                risk_reward=rr,
                 reasoning=f"RSI overbought ({rsi_val:.1f}), rejected upper BB ({upper_bb:.2f})",
                 match_trader_symbol=mt_sym
             )

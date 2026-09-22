@@ -108,22 +108,22 @@
         <div class="mb-5 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
             <!-- Filter Tabs -->
             <div class="flex flex-wrap gap-1.5 sm:gap-2" id="categoryTabs">
-                <button onclick="setCategory('all')" class="cat-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/40">
+                <button data-category="all" onclick="setCategory('all', this)" class="cat-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/40">
                     🎯 All <span id="count-all" class="ml-1 text-[11px] opacity-75">30</span>
                 </button>
-                <button onclick="setCategory('crypto')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                <button data-category="crypto" onclick="setCategory('crypto', this)" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
                     ₿ Crypto <span id="count-crypto" class="ml-1 text-[11px] opacity-75">0</span>
                 </button>
-                <button onclick="setCategory('forex')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                <button data-category="forex" onclick="setCategory('forex', this)" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
                     💱 Forex <span id="count-forex" class="ml-1 text-[11px] opacity-75">0</span>
                 </button>
-                <button onclick="setCategory('commodities')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                <button data-category="commodities" onclick="setCategory('commodities', this)" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
                     🥇 Commodities <span id="count-commodities" class="ml-1 text-[11px] opacity-75">0</span>
                 </button>
-                <button onclick="setCategory('indices')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                <button data-category="indices" onclick="setCategory('indices', this)" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
                     📊 Indices <span id="count-indices" class="ml-1 text-[11px] opacity-75">0</span>
                 </button>
-                <button onclick="setCategory('stocks')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                <button data-category="stocks" onclick="setCategory('stocks', this)" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
                     📈 Stocks <span id="count-stocks" class="ml-1 text-[11px] opacity-75">0</span>
                 </button>
             </div>
@@ -314,12 +314,17 @@
             fetchSignals();
         }
 
-        function setCategory(cat) {
+        let renderedSignals = [];
+
+        function setCategory(cat, btnElement) {
             currentCategory = cat;
             document.querySelectorAll('.cat-tab').forEach(tab => {
                 tab.className = "cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white";
             });
-            event.currentTarget.className = "cat-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/40";
+            const target = btnElement || document.querySelector(`[data-category="${cat}"]`);
+            if (target) {
+                target.className = "cat-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/40";
+            }
             fetchSignals();
         }
 
@@ -396,19 +401,20 @@
         }
 
         function renderSignals(signals) {
+            renderedSignals = signals || [];
             const tbody = document.getElementById('signalTableBody');
             const mobileContainer = document.getElementById('mobileCardsContainer');
 
             tbody.innerHTML = '';
             mobileContainer.innerHTML = '';
 
-            if (signals.length === 0) {
+            if (renderedSignals.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="12" class="py-8 text-center text-gray-400">No signals match current filters.</td></tr>';
                 mobileContainer.innerHTML = '<div class="p-6 text-center text-gray-400 bg-card rounded-lg">No signals found.</div>';
                 return;
             }
 
-            signals.forEach((sig, index) => {
+            renderedSignals.forEach((sig, index) => {
                 const isLong = sig.direction === 'LONG';
                 const dirBadge = isLong 
                     ? `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-700">▲ LONG</span>`
@@ -456,7 +462,7 @@
                     <td class="py-3 px-3 font-mono text-purple-300 font-semibold text-xs">${sig.match_trader_symbol || sig.symbol}</td>
                     <td class="py-3 px-4 text-gray-400 text-xs max-w-xs truncate" title="${sig.reasoning}">${sig.reasoning}</td>
                     <td class="py-3 px-3 text-center">
-                        <button onclick='openModal(${JSON.stringify(sig)})' class="px-2 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs transition active:scale-95">
+                        <button onclick="openModalByIndex(${index})" class="px-2 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs transition active:scale-95">
                             Calc Lot
                         </button>
                     </td>
@@ -501,7 +507,7 @@
 
                     <div class="flex justify-between items-center pt-2 border-t border-cardBorder">
                         <span class="text-[11px] font-mono text-purple-300">Match-Trader: <strong>${sig.match_trader_symbol || sig.symbol}</strong></span>
-                        <button onclick='openModal(${JSON.stringify(sig)})' class="px-3 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs font-semibold">
+                        <button onclick="openModalByIndex(${index})" class="px-3 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs font-semibold">
                             Calc Lot Size
                         </button>
                     </div>
@@ -518,7 +524,16 @@
         // Modal Logic
         let activeModalSig = null;
 
+        function openModalByIndex(index) {
+            const sig = renderedSignals[index];
+            if (!sig) return;
+            openModal(sig);
+        }
+
         function openModal(sig) {
+            if (typeof sig === 'number') {
+                return openModalByIndex(sig);
+            }
             activeModalSig = sig;
             document.getElementById('modalSymbol').value = `${sig.display_name} (${sig.match_trader_symbol || sig.symbol})`;
             document.getElementById('modalEntry').value = sig.entry_price;
