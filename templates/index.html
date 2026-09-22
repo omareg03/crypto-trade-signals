@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>QuantumTrader — Multi-Asset Live Signals</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#0d1117',
+                        card: '#161b22',
+                        cardBorder: '#30363d',
+                        neonGreen: '#2ea043',
+                        neonRed: '#f85149',
+                        neonCyan: '#58a6ff',
+                        neonYellow: '#d29922'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .neon-border-green {
+            box-shadow: 0 0 12px rgba(46, 160, 67, 0.25);
+            border-color: #2ea043;
+        }
+        .neon-border-yellow {
+            box-shadow: 0 0 12px rgba(210, 153, 34, 0.25);
+            border-color: #d29922;
+        }
+        .table-row-hover:hover {
+            background-color: rgba(56, 139, 253, 0.08);
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0d1117;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #30363d;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #58a6ff;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-dark text-gray-200 p-3 sm:p-6 lg:p-8 flex flex-col">
+    <div class="max-w-7xl mx-auto w-full flex-grow">
+        
+        <!-- TOP HEADER -->
+        <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-cardBorder pb-4">
+            <div>
+                <div class="flex items-center gap-3">
+                    <div class="w-3.5 h-3.5 rounded-full bg-emerald-500 animate-ping"></div>
+                    <h1 class="text-2xl sm:text-3xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400">
+                        QUANTUM TRADER
+                    </h1>
+                    <span class="px-2 py-0.5 text-xs font-semibold uppercase tracking-wider bg-emerald-950 text-emerald-400 border border-emerald-800 rounded">
+                        v2.0 Online
+                    </span>
+                </div>
+                <p class="text-xs sm:text-sm text-gray-400 mt-1 flex items-center gap-2">
+                    <span>Funding Pips $5,000 Challenge Signals</span>
+                    <span>•</span>
+                    <span class="text-cyan-400 font-mono" id="lastUpdatedText">Connecting...</span>
+                </p>
+            </div>
+
+            <!-- ACTION CONTROLS & TOGGLES -->
+            <div class="flex flex-wrap items-center gap-2 sm:gap-3 w-full md:w-auto">
+                <!-- Top 10 vs Top 30 Toggle Switch -->
+                <div class="inline-flex rounded-lg border border-cardBorder bg-card p-1 text-xs font-semibold">
+                    <button id="btnTop10" onclick="setViewMode(10)" class="px-3 py-1.5 rounded transition text-gray-400 hover:text-white">
+                        Top 10 (Compact)
+                    </button>
+                    <button id="btnTop30" onclick="setViewMode(30)" class="px-3 py-1.5 rounded transition bg-emerald-600 text-white shadow">
+                        Top 30 (Full)
+                    </button>
+                </div>
+
+                <!-- Refresh Button & Countdown -->
+                <button onclick="manualRefresh()" id="refreshBtn" class="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-medium py-1.5 px-3.5 rounded-lg text-xs sm:text-sm transition shadow-md active:scale-95">
+                    <svg id="refreshIcon" class="w-4 h-4 animate-spin-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    <span id="refreshBtnText">Refresh</span>
+                    <span id="countdownBadge" class="bg-black/30 px-1.5 py-0.5 rounded text-[11px] font-mono">60s</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- CATEGORY TABS & SEARCH BAR -->
+        <div class="mb-5 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
+            <!-- Filter Tabs -->
+            <div class="flex flex-wrap gap-1.5 sm:gap-2" id="categoryTabs">
+                <button onclick="setCategory('all')" class="cat-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/40">
+                    🎯 All <span id="count-all" class="ml-1 text-[11px] opacity-75">30</span>
+                </button>
+                <button onclick="setCategory('crypto')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                    ₿ Crypto <span id="count-crypto" class="ml-1 text-[11px] opacity-75">0</span>
+                </button>
+                <button onclick="setCategory('forex')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                    💱 Forex <span id="count-forex" class="ml-1 text-[11px] opacity-75">0</span>
+                </button>
+                <button onclick="setCategory('commodities')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                    🥇 Commodities <span id="count-commodities" class="ml-1 text-[11px] opacity-75">0</span>
+                </button>
+                <button onclick="setCategory('indices')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                    📊 Indices <span id="count-indices" class="ml-1 text-[11px] opacity-75">0</span>
+                </button>
+                <button onclick="setCategory('stocks')" class="cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white">
+                    📈 Stocks <span id="count-stocks" class="ml-1 text-[11px] opacity-75">0</span>
+                </button>
+            </div>
+
+            <!-- Search Filter -->
+            <div class="relative w-full sm:w-64">
+                <input type="text" id="searchInput" oninput="filterLocalSignals()" placeholder="Search symbol or strategy..." 
+                       class="w-full bg-card border border-cardBorder rounded-lg px-3 py-1.5 text-xs sm:text-sm text-gray-200 placeholder-gray-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500">
+                <span class="absolute right-3 top-2 text-gray-500 text-xs">🔍</span>
+            </div>
+        </div>
+
+        <!-- MAIN TABLE (DESKTOP & TABLET VIEW) -->
+        <div class="hidden md:block bg-card rounded-xl shadow-2xl overflow-hidden border border-cardBorder neon-border-green mb-8">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse font-mono text-xs sm:text-sm">
+                    <thead>
+                        <tr class="bg-gray-900/90 text-gray-300 uppercase text-[11px] tracking-wider border-b border-cardBorder">
+                            <th class="py-3 px-3 text-center w-12">#</th>
+                            <th class="py-3 px-4">Asset / Symbol</th>
+                            <th class="py-3 px-3 text-center">Direction</th>
+                            <th class="py-3 px-3">Strategy</th>
+                            <th class="py-3 px-3 text-right">Confidence</th>
+                            <th class="py-3 px-3 text-right">Entry</th>
+                            <th class="py-3 px-3 text-right">Stop Loss</th>
+                            <th class="py-3 px-3 text-right">TP1 Target</th>
+                            <th class="py-3 px-3 text-center">R:R</th>
+                            <th class="py-3 px-3">Match-Trader</th>
+                            <th class="py-3 px-4">Technical Reasoning</th>
+                            <th class="py-3 px-3 text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signalTableBody" class="divide-y divide-cardBorder">
+                        <tr>
+                            <td colspan="12" class="py-12 text-center text-gray-400">
+                                <div class="inline-flex items-center gap-3">
+                                    <div class="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                                    <span>Scanning live market data across 46 assets...</span>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- MOBILE CARDS VIEW (SMARTPHONES) -->
+        <div id="mobileCardsContainer" class="md:hidden space-y-3 mb-8">
+            <div class="p-6 text-center text-gray-400 bg-card rounded-lg border border-cardBorder">
+                <div class="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                Loading signals for mobile...
+            </div>
+        </div>
+
+        <!-- RISK MANAGEMENT & FUNDING PIPS CHALLENGE BOX -->
+        <section class="bg-card rounded-xl p-5 sm:p-6 border border-yellow-500/40 neon-border-yellow mb-8 shadow-2xl">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 border-b border-cardBorder pb-3">
+                <div class="flex items-center gap-2">
+                    <span class="text-xl">🛡️</span>
+                    <h2 class="text-base sm:text-lg font-bold text-yellow-400 tracking-wide">
+                        RISK MANAGEMENT — FUNDING PIPS $5,000 2-STEP FLEX
+                    </h2>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-700">
+                        ✅ STATUS: ACTIVE
+                    </span>
+                    <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-cyan-950 text-cyan-400 border border-cyan-700">
+                        Match-Trader
+                    </span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs sm:text-sm">
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Account Size</p>
+                    <p class="text-base sm:text-lg font-bold text-white mt-0.5">$5,000.00</p>
+                    <p class="text-[10px] text-gray-500">Starting Equity</p>
+                </div>
+
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Risk Per Trade</p>
+                    <p class="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">1.0% - 2.0%</p>
+                    <p class="text-[10px] text-gray-500">$50.00 - $100.00 max</p>
+                </div>
+
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Max Daily Drawdown</p>
+                    <p class="text-base sm:text-lg font-bold text-yellow-400 mt-0.5">5.0% ($250.00)</p>
+                    <p class="text-[10px] text-yellow-600 font-semibold">Strict Rule Stop</p>
+                </div>
+
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Max Total Loss</p>
+                    <p class="text-base sm:text-lg font-bold text-red-400 mt-0.5">10.0% ($500.00)</p>
+                    <p class="text-[10px] text-red-500 font-semibold">Challenge Limit</p>
+                </div>
+
+                <div class="col-span-2 sm:col-span-1 bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Correlation & Stop</p>
+                    <p class="text-base sm:text-lg font-bold text-cyan-400 mt-0.5">Max 3 Correlated</p>
+                    <p class="text-[10px] text-emerald-400 font-semibold">SL Always Enforced</p>
+                </div>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- MODAL: MATCH-TRADER LOT SIZE CALCULATOR -->
+    <div id="lotModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-card border border-cardBorder rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl neon-border-green">
+            <div class="flex justify-between items-center border-b border-cardBorder pb-3 mb-4">
+                <div class="flex items-center gap-2">
+                    <span class="text-xl">🧮</span>
+                    <h3 class="font-bold text-white text-base">Match-Trader Lot Sizing</h3>
+                </div>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white text-lg font-bold">&times;</button>
+            </div>
+
+            <div class="space-y-3.5 text-xs sm:text-sm">
+                <div>
+                    <label class="block text-gray-400 mb-1">Asset Symbol</label>
+                    <input type="text" id="modalSymbol" readonly class="w-full bg-dark border border-cardBorder rounded p-2 text-cyan-400 font-mono font-bold">
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-gray-400 mb-1">Entry Price</label>
+                        <input type="number" step="any" id="modalEntry" oninput="recalcModalLot()" class="w-full bg-dark border border-cardBorder rounded p-2 text-white font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-1">Stop Loss Price</label>
+                        <input type="number" step="any" id="modalStop" oninput="recalcModalLot()" class="w-full bg-dark border border-cardBorder rounded p-2 text-red-400 font-mono">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-gray-400 mb-1">Account Balance ($)</label>
+                        <input type="number" id="modalAccount" value="5000" oninput="recalcModalLot()" class="w-full bg-dark border border-cardBorder rounded p-2 text-white font-mono">
+                    </div>
+                    <div>
+                        <label class="block text-gray-400 mb-1">Risk Amount</label>
+                        <select id="modalRiskPct" onchange="recalcModalLot()" class="w-full bg-dark border border-cardBorder rounded p-2 text-white font-mono">
+                            <option value="1.0" selected>1.0% ($50.00)</option>
+                            <option value="1.5">1.5% ($75.00)</option>
+                            <option value="2.0">2.0% ($100.00)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Calculation Result Box -->
+                <div class="mt-4 p-4 rounded-xl bg-gradient-to-br from-emerald-950/60 to-dark border border-emerald-500/40 text-center">
+                    <p class="text-xs text-emerald-400 uppercase tracking-wider font-semibold">Recommended Match-Trader Position</p>
+                    <p class="text-3xl font-black text-white font-mono my-1" id="modalLotResult">0.00 Lots</p>
+                    <p class="text-xs text-gray-400" id="modalRiskResult">Risk: $50.00 (1.0%)</p>
+                </div>
+            </div>
+
+            <div class="mt-5 flex gap-2">
+                <button onclick="closeModal()" class="w-full py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg text-xs font-semibold">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT LOGIC -->
+    <script>
+        let currentLimit = 30;
+        let currentCategory = 'all';
+        let rawSignals = [];
+        let countdownSec = 60;
+        let countdownTimer = null;
+
+        function setViewMode(limit) {
+            currentLimit = limit;
+            const btn10 = document.getElementById('btnTop10');
+            const btn30 = document.getElementById('btnTop30');
+
+            if (limit === 10) {
+                btn10.className = "px-3 py-1.5 rounded transition bg-emerald-600 text-white shadow";
+                btn30.className = "px-3 py-1.5 rounded transition text-gray-400 hover:text-white";
+            } else {
+                btn30.className = "px-3 py-1.5 rounded transition bg-emerald-600 text-white shadow";
+                btn10.className = "px-3 py-1.5 rounded transition text-gray-400 hover:text-white";
+            }
+            fetchSignals();
+        }
+
+        function setCategory(cat) {
+            currentCategory = cat;
+            document.querySelectorAll('.cat-tab').forEach(tab => {
+                tab.className = "cat-tab px-3 py-1.5 rounded-lg text-xs font-semibold bg-card text-gray-400 border border-cardBorder hover:text-white";
+            });
+            event.currentTarget.className = "cat-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-500/40";
+            fetchSignals();
+        }
+
+        function formatPrice(price) {
+            if (price === null || price === undefined) return 'N/A';
+            const num = parseFloat(price);
+            if (isNaN(num)) return 'N/A';
+            if (num >= 1000) return '$' + num.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            if (num >= 1) return '$' + num.toFixed(4);
+            return '$' + num.toFixed(6);
+        }
+
+        function startCountdown() {
+            clearInterval(countdownTimer);
+            countdownSec = 60;
+            const badge = document.getElementById('countdownBadge');
+            badge.innerText = countdownSec + 's';
+
+            countdownTimer = setInterval(() => {
+                countdownSec--;
+                if (countdownSec <= 0) {
+                    countdownSec = 60;
+                    fetchSignals();
+                }
+                badge.innerText = countdownSec + 's';
+            }, 1000);
+        }
+
+        async function fetchSignals() {
+            const refreshIcon = document.getElementById('refreshIcon');
+            const refreshBtnText = document.getElementById('refreshBtnText');
+            refreshIcon.classList.add('animate-spin');
+            refreshBtnText.innerText = 'Scanning...';
+
+            try {
+                const response = await fetch(`/api/signals?top=${currentLimit}&category=${currentCategory}`);
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    rawSignals = data.signals;
+                    document.getElementById('lastUpdatedText').innerText = `Updated: ${data.last_updated || 'Just now'}`;
+
+                    // Update Category counts
+                    if (data.category_counts) {
+                        for (const [cat, count] of Object.entries(data.category_counts)) {
+                            const badge = document.getElementById(`count-${cat}`);
+                            if (badge) badge.innerText = count;
+                        }
+                    }
+
+                    renderSignals(rawSignals);
+                }
+            } catch (error) {
+                console.error('Error fetching signals:', error);
+            } finally {
+                refreshIcon.classList.remove('animate-spin');
+                refreshBtnText.innerText = 'Refresh';
+            }
+        }
+
+        function filterLocalSignals() {
+            const query = document.getElementById('searchInput').value.toLowerCase().trim();
+            if (!query) {
+                renderSignals(rawSignals);
+                return;
+            }
+            const filtered = rawSignals.filter(s => 
+                (s.display_name && s.display_name.toLowerCase().includes(query)) ||
+                (s.symbol && s.symbol.toLowerCase().includes(query)) ||
+                (s.strategy && s.strategy.toLowerCase().includes(query)) ||
+                (s.match_trader_symbol && s.match_trader_symbol.toLowerCase().includes(query))
+            );
+            renderSignals(filtered);
+        }
+
+        function renderSignals(signals) {
+            const tbody = document.getElementById('signalTableBody');
+            const mobileContainer = document.getElementById('mobileCardsContainer');
+
+            tbody.innerHTML = '';
+            mobileContainer.innerHTML = '';
+
+            if (signals.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="12" class="py-8 text-center text-gray-400">No signals match current filters.</td></tr>';
+                mobileContainer.innerHTML = '<div class="p-6 text-center text-gray-400 bg-card rounded-lg">No signals found.</div>';
+                return;
+            }
+
+            signals.forEach((sig, index) => {
+                const isLong = sig.direction === 'LONG';
+                const dirBadge = isLong 
+                    ? `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-700">▲ LONG</span>`
+                    : `<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-red-950 text-red-400 border border-red-700">▼ SHORT</span>`;
+
+                // Confidence styling
+                let confColor = 'text-gray-400';
+                let confBg = 'bg-gray-700';
+                if (sig.confidence >= 85) { confColor = 'text-emerald-400 font-bold'; confBg = 'bg-emerald-500'; }
+                else if (sig.confidence >= 70) { confColor = 'text-yellow-400 font-bold'; confBg = 'bg-yellow-500'; }
+
+                // Category pill
+                const catPills = {
+                    'crypto': 'bg-purple-950/70 text-purple-400 border-purple-800',
+                    'forex': 'bg-blue-950/70 text-blue-400 border-blue-800',
+                    'commodities': 'bg-amber-950/70 text-amber-400 border-amber-800',
+                    'indices': 'bg-cyan-950/70 text-cyan-400 border-cyan-800',
+                    'stocks': 'bg-emerald-950/70 text-emerald-400 border-emerald-800'
+                };
+                const catClass = catPills[sig.category] || 'bg-gray-800 text-gray-300 border-gray-700';
+
+                // DESKTOP TABLE ROW
+                const tr = document.createElement('tr');
+                tr.className = 'table-row-hover transition border-b border-cardBorder text-xs sm:text-sm';
+                tr.innerHTML = `
+                    <td class="py-3 px-3 text-center text-gray-500 font-bold">${index + 1}</td>
+                    <td class="py-3 px-4 font-semibold text-white whitespace-nowrap">
+                        <div class="flex items-center gap-2">
+                            <span>${sig.display_name}</span>
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono border ${catClass}">${sig.category.toUpperCase()}</span>
+                        </div>
+                    </td>
+                    <td class="py-3 px-3 text-center whitespace-nowrap">${dirBadge}</td>
+                    <td class="py-3 px-3 whitespace-nowrap text-gray-300">${sig.strategy}</td>
+                    <td class="py-3 px-3 text-right whitespace-nowrap">
+                        <span class="${confColor}">${sig.confidence}%</span>
+                        <div class="w-12 h-1 bg-gray-800 rounded-full ml-auto mt-1 overflow-hidden">
+                            <div class="${confBg} h-full" style="width: ${sig.confidence}%"></div>
+                        </div>
+                    </td>
+                    <td class="py-3 px-3 text-right text-gray-200">${formatPrice(sig.entry_price)}</td>
+                    <td class="py-3 px-3 text-right text-red-400">${formatPrice(sig.stop_loss)}</td>
+                    <td class="py-3 px-3 text-right text-emerald-400">${formatPrice(sig.take_profit_1)}</td>
+                    <td class="py-3 px-3 text-center font-bold text-cyan-300">${sig.risk_reward.toFixed(1)}</td>
+                    <td class="py-3 px-3 font-mono text-purple-300 font-semibold text-xs">${sig.match_trader_symbol || sig.symbol}</td>
+                    <td class="py-3 px-4 text-gray-400 text-xs max-w-xs truncate" title="${sig.reasoning}">${sig.reasoning}</td>
+                    <td class="py-3 px-3 text-center">
+                        <button onclick='openModal(${JSON.stringify(sig)})' class="px-2 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs transition active:scale-95">
+                            Calc Lot
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+
+                // MOBILE CARD
+                const card = document.createElement('div');
+                card.className = 'bg-card p-4 rounded-xl border border-cardBorder shadow-lg space-y-3';
+                card.innerHTML = `
+                    <div class="flex justify-between items-center border-b border-cardBorder pb-2">
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs text-gray-500 font-bold">#${index + 1}</span>
+                            <span class="font-bold text-white text-sm">${sig.display_name}</span>
+                            <span class="px-1.5 py-0.2 rounded text-[9px] font-mono border ${catClass}">${sig.category.toUpperCase()}</span>
+                        </div>
+                        <div>${dirBadge}</div>
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-2 text-xs">
+                        <div class="bg-dark/80 p-2 rounded border border-cardBorder text-center">
+                            <p class="text-[10px] text-gray-400">ENTRY</p>
+                            <p class="font-mono font-bold text-white mt-0.5">${formatPrice(sig.entry_price)}</p>
+                        </div>
+                        <div class="bg-dark/80 p-2 rounded border border-cardBorder text-center">
+                            <p class="text-[10px] text-red-400">STOP LOSS</p>
+                            <p class="font-mono font-bold text-red-400 mt-0.5">${formatPrice(sig.stop_loss)}</p>
+                        </div>
+                        <div class="bg-dark/80 p-2 rounded border border-cardBorder text-center">
+                            <p class="text-[10px] text-emerald-400">TP1 TARGET</p>
+                            <p class="font-mono font-bold text-emerald-400 mt-0.5">${formatPrice(sig.take_profit_1)}</p>
+                        </div>
+                    </div>
+
+                    <div class="flex justify-between items-center text-xs text-gray-400 pt-1">
+                        <div>
+                            <span>Strategy: <strong class="text-gray-200">${sig.strategy}</strong></span>
+                            <span class="ml-2">R:R: <strong class="text-cyan-300 font-bold">${sig.risk_reward.toFixed(1)}</strong></span>
+                        </div>
+                        <div class="${confColor}">${sig.confidence}% Confidence</div>
+                    </div>
+
+                    <div class="flex justify-between items-center pt-2 border-t border-cardBorder">
+                        <span class="text-[11px] font-mono text-purple-300">Match-Trader: <strong>${sig.match_trader_symbol || sig.symbol}</strong></span>
+                        <button onclick='openModal(${JSON.stringify(sig)})' class="px-3 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs font-semibold">
+                            Calc Lot Size
+                        </button>
+                    </div>
+                `;
+                mobileContainer.appendChild(card);
+            });
+        }
+
+        function manualRefresh() {
+            fetchSignals();
+            startCountdown();
+        }
+
+        // Modal Logic
+        let activeModalSig = null;
+
+        function openModal(sig) {
+            activeModalSig = sig;
+            document.getElementById('modalSymbol').value = `${sig.display_name} (${sig.match_trader_symbol || sig.symbol})`;
+            document.getElementById('modalEntry').value = sig.entry_price;
+            document.getElementById('modalStop').value = sig.stop_loss;
+            document.getElementById('modalRiskPct').value = "1.0";
+            document.getElementById('lotModal').classList.remove('hidden');
+            recalcModalLot();
+        }
+
+        function closeModal() {
+            document.getElementById('lotModal').classList.add('hidden');
+        }
+
+        async function recalcModalLot() {
+            const entry = parseFloat(document.getElementById('modalEntry').value) || 0;
+            const stop = parseFloat(document.getElementById('modalStop').value) || 0;
+            const account = parseFloat(document.getElementById('modalAccount').value) || 5000;
+            const riskPct = parseFloat(document.getElementById('modalRiskPct').value) || 1.0;
+            const symbol = activeModalSig ? activeModalSig.symbol : "BTC-USD";
+
+            try {
+                const res = await fetch('/api/calculate_lot', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        symbol: symbol,
+                        entry: entry,
+                        stop_loss: stop,
+                        account_size: account,
+                        risk_pct: riskPct
+                    })
+                });
+                const data = await res.json();
+                document.getElementById('modalLotResult').innerText = `${data.lot_size} Lots`;
+                document.getElementById('modalRiskResult').innerText = `Max Risk: $${data.risk_usd.toFixed(2)} (${riskPct}%) | Distance: ${data.distance}`;
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        // Initial launch
+        fetchSignals();
+        startCountdown();
+    </script>
+</body>
+</html>
