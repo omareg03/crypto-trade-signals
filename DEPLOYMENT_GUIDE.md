@@ -15,17 +15,18 @@ This guide walks you through connecting your GitHub repository to **Render.com**
 3. Set the repository visibility to **Public** (or **Private**).
 4. Leave all other options unchecked (*Do NOT initialize with a README, .gitignore, or license*).
 5. Click **Create repository**.
-6. On your computer, open PowerShell or CMD, navigate to this folder, and run:
+6. **Push with 1-Click**:
+   - Double-click **`Push_To_GitHub.bat`** on your **Desktop** (or in this folder).
+   - Press **Enter** to accept the default repository URL (`https://github.com/omareg03/crypto-trade-signals.git`).
+   - The script automatically configures the remote and pushes your code to GitHub!
+
+   *(Alternatively, run these commands in PowerShell or CMD):*
    ```powershell
    cd "C:\Users\oegar\OneDrive\Documents\Crypto 2026 - Pips, Coinbase"
-   git init
-   git add .
-   git commit -m "QuantumTrader v2.0 - 30 Multi-Asset Trading Signals with Match-Trader Calculator"
-   git branch -M main
    git remote add origin https://github.com/omareg03/crypto-trade-signals.git
+   git branch -M main
    git push -u origin main
    ```
-   *(If prompted, log in with your GitHub credentials or Personal Access Token).*
 
 ---
 

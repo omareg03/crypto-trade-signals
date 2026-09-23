@@ -63,15 +63,14 @@ See detailed guide: [DEPLOYMENT_GUIDE.md](file:///c:/Users/oegar/OneDrive/Docume
 
 ### Quick Deployment Steps:
 1. Create a repository on [GitHub](https://github.com/new) named `crypto-trade-signals`.
-2. Push this folder to GitHub:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial QuantumTrader commit"
-   git branch -M main
-   git remote add origin https://github.com/omareg03/crypto-trade-signals.git
-   git push -u origin main
-   ```
+2. Push with 1-Click:
+   - Double-click **`Push_To_GitHub.bat`** on your **Desktop** (or in this folder).
+   - Or run in terminal:
+     ```bash
+     git remote add origin https://github.com/omareg03/crypto-trade-signals.git
+     git branch -M main
+     git push -u origin main
+     ```
 3. On [Render.com](https://render.com), click **New +** -> **Web Service** -> select your repository.
 4. Settings:
    - **Build Command**: `pip install -r requirements.txt`
