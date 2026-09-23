@@ -82,7 +82,7 @@ class SignalEngine:
         if ema9_val > ema21_val and macd_hist > 0:
             confidence = min(90, 60 + int(abs(macd_hist / current * 1000)))
             stop = current * 0.97
-            tp1 = current * 1.045
+            tp1 = current * 1.03
             tp2 = current * 1.06
             rr = round((tp1 - current) / (current - stop), 2)
             return TradeSetup(
@@ -105,7 +105,7 @@ class SignalEngine:
         elif ema9_val < ema21_val and macd_hist < 0:
             confidence = min(90, 60 + int(abs(macd_hist / current * 1000)))
             stop = current * 1.03
-            tp1 = current * 0.955
+            tp1 = current * 0.97
             tp2 = current * 0.94
             rr = round((current - tp1) / (stop - current), 2)
             return TradeSetup(
@@ -229,25 +229,6 @@ class SignalEngine:
                 take_profit_2=round(current * 1.08, 5),
                 risk_reward=round(0.04 / 0.025, 2),
                 reasoning=f"Momentum: RSI={rsi_val:.1f} (bullish zone), MACD hist={hist_str}",
-                display_name=display_name,
-                category=category,
-                match_trader_symbol=mt_sym,
-                cleo_symbol=cleo_sym
-            )
-        # Bearish momentum: RSI 30-50 + negative MACD
-        elif 30 < rsi_val < 50 and macd_hist < 0:
-            confidence = min(85, 55 + int(50 - rsi_val))
-            return TradeSetup(
-                symbol=symbol,
-                direction="SHORT",
-                strategy="Momentum",
-                confidence=confidence,
-                entry_price=round(current, 5),
-                stop_loss=round(current * 1.025, 5),
-                take_profit_1=round(current * 0.96, 5),
-                take_profit_2=round(current * 0.92, 5),
-                risk_reward=round(0.04 / 0.025, 2),
-                reasoning=f"Momentum: RSI={rsi_val:.1f} (bearish zone), MACD hist={hist_str}",
                 display_name=display_name,
                 category=category,
                 match_trader_symbol=mt_sym,
