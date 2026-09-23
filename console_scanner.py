@@ -2,17 +2,18 @@
 console_scanner.py
 
 Interactive CMD Terminal Scanner for QuantumTrader.
-Displays either TOP 10 or TOP 30 ranked signals with live 60-second auto-refresh
-and Dynamic Risk Management summary box for:
-- Funding Pips (via Match-Trader): $5K, $10K, $25K, $50K, $100K, $200K
-- Hyro Trader (via Cleo.finance Bybit Futures): 5K, 10K, 25K, 50K, 100K, 200K USDT
+Displays either TOP 10 or TOP 30 ranked signals with live 60-second auto-refresh,
+Market Overview box (Gold, Silver, Crude Oil on top), and Prop Firm Risk Management summary.
+
+Maintains the exact 10-column layout and clean Rich formatting of original QuantumTrader:
+# | Symbol | Direction | Strategy | Confidence | Entry | Stop | TP1 | R:R | Reasoning
 """
 import sys
 import os
 import time
 import argparse
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Dict, Any, Optional
 
 # UTF-8 Console Encoding
 if sys.stdout.encoding.lower() != 'utf-8':
@@ -30,11 +31,12 @@ from data_engine import MarketDataEngine
 from technical_analysis import TechnicalAnalyzer
 from signal_engine import SignalEngine, TradeSetup
 from risk_manager import RiskManager
+from dashboard import TradingDashboard, SYMBOL_NAMES
 import config
 
 
-class ConsoleTradingDashboard:
-    """Rich terminal renderer for trade signals and risk parameters."""
+class ConsoleTradingDashboard(TradingDashboard):
+    """Console trading dashboard extending TradingDashboard with prop firm banner."""
 
     def __init__(self):
         term_width = None
@@ -42,19 +44,9 @@ class ConsoleTradingDashboard:
             term_width = os.get_terminal_size().columns
         except Exception:
             pass
-        effective_width = max(140, term_width) if term_width else 150
+        effective_width = term_width if term_width and term_width >= 120 else 120
         self.console = Console(width=effective_width)
-
-    @staticmethod
-    def _format_price(price: Optional[float]) -> str:
-        if price is None:
-            return "N/A"
-        if price >= 1000:
-            return f"${price:,.2f}"
-        elif price >= 1:
-            return f"${price:.4f}"
-        else:
-            return f"${price:.6f}"
+        self.logger = self.console
 
     def print_banner(self, count: int, firm_name: str, capital_str: str) -> None:
         banner = f"""[bold cyan]
@@ -70,40 +62,42 @@ class ConsoleTradingDashboard:
 [/bold cyan]"""
         self.console.print(banner)
 
-    def display_signals(self, signals: List[TradeSetup], limit: int = 30, firm: str = "funding_pips") -> None:
-        """Displays color-coded table of top trade signals."""
+    def display_signals(self, signals: List[TradeSetup], limit: int = 30) -> None:
+        """
+        Displays color-coded table of top trade signals with EXACT 10 columns:
+        # | Symbol | Direction | Strategy | Confidence | Entry | Stop | TP1 | R:R | Reasoning
+        """
         if not signals:
             self.console.print("[yellow]⚠️  No signals available. Retrying next cycle...[/yellow]")
             return
 
-        is_hyro = (firm.lower() == "hyro_trader")
-        platform_header = "Cleo.finance" if is_hyro else "Match-Trader"
-
         table = Table(
-            title=f"🎯 TOP {min(len(signals), limit)} TRADE SIGNALS ({'HYRO TRADER' if is_hyro else 'FUNDING PIPS'})",
+            title=f"🎯 TOP {min(len(signals), limit)} TRADE SIGNALS",
             box=box.DOUBLE_EDGE,
             border_style="green",
-            title_style="bold green",
-            expand=True
+            title_style="bold green"
         )
         table.add_column("#", style="dim", width=3, justify="right")
-        table.add_column("Symbol", style="bold white", min_width=16)
-        table.add_column("Direction", justify="center", min_width=9)
-        table.add_column("Strategy", min_width=16)
-        table.add_column("Confidence", justify="right", min_width=10)
-        table.add_column("Entry", justify="right", min_width=11)
-        table.add_column("Stop", justify="right", min_width=11)
-        table.add_column("TP1", justify="right", min_width=11)
-        table.add_column("R:R", justify="right", min_width=5)
-        table.add_column(platform_header, style="magenta", min_width=12)
-        table.add_column("Reasoning", min_width=25, overflow="fold")
+        table.add_column("Symbol", style="bold white", width=14, no_wrap=True)
+        table.add_column("Direction", justify="center", width=8, no_wrap=True)
+        table.add_column("Strategy", width=15, no_wrap=True)
+        table.add_column("Confidence", justify="right", width=10, no_wrap=True)
+        table.add_column("Entry", justify="right", width=10, no_wrap=True)
+        table.add_column("Stop", justify="right", width=10, no_wrap=True)
+        table.add_column("TP1", justify="right", width=10, no_wrap=True)
+        table.add_column("R:R", justify="right", width=4, no_wrap=True)
+        table.add_column("Reasoning", no_wrap=False)
 
         for i, sig in enumerate(signals[:limit], 1):
-            if sig.direction == "LONG":
-                dir_str = "[bold green]▲ LONG[/bold green]"
-            else:
-                dir_str = "[bold red]▼ SHORT[/bold red]"
+            display_name = sig.display_name or SYMBOL_NAMES.get(sig.symbol, sig.symbol.upper())
 
+            # Color direction
+            if sig.direction == "LONG":
+                dir_str = "[green]▲ LONG[/green]"
+            else:
+                dir_str = "[red]▼ SHORT[/red]"
+
+            # Color confidence
             if sig.confidence >= 80:
                 conf_str = f"[bold green]{sig.confidence}%[/bold green]"
             elif sig.confidence >= 65:
@@ -111,11 +105,9 @@ class ConsoleTradingDashboard:
             else:
                 conf_str = f"[dim]{sig.confidence}%[/dim]"
 
-            platform_symbol = sig.cleo_symbol if is_hyro else (sig.match_trader_symbol or sig.symbol)
-
             table.add_row(
                 str(i),
-                sig.display_name,
+                display_name,
                 dir_str,
                 sig.strategy,
                 conf_str,
@@ -123,34 +115,10 @@ class ConsoleTradingDashboard:
                 self._format_price(sig.stop_loss),
                 self._format_price(sig.take_profit_1),
                 f"{sig.risk_reward:.1f}",
-                platform_symbol,
                 sig.reasoning
             )
 
         self.console.print(table)
-
-    def display_risk_summary(self, risk_manager: RiskManager, firm: str = "funding_pips", capital: Optional[float] = None) -> None:
-        """Display prop firm risk management summary panel."""
-        summary = risk_manager.get_challenge_summary(firm=firm, account_size=capital)
-        curr = summary.get("currency", "USD")
-        content = (
-            f"[bold]Account:[/bold] [cyan]{summary['account_name']}[/cyan] ({summary['platform']})\n"
-            f"[bold]Instrument Focus:[/bold] {summary['instrument_focus']}\n"
-            f"[bold]Position Sizing:[/bold] 1-2% risk per trade ({summary['recommended_risk_1pct_usd']:,.2f} - {summary['recommended_risk_2pct_usd']:,.2f} {curr})\n"
-            f"[bold]Max Daily Drawdown:[/bold] [yellow]5% ({summary['max_daily_drawdown_usd']:,.2f} {curr})[/yellow]\n"
-            f"[bold]Max Total Drawdown:[/bold] [red]10% ({summary['max_total_drawdown_usd']:,.2f} {curr})[/red]\n"
-            f"[bold]Max Correlated:[/bold] {summary['max_correlated_positions']} open positions\n"
-            f"[bold]Stop Loss:[/bold] [green]ALWAYS ENFORCED[/green]\n"
-            f"[bold]Status:[/bold] [bold green]✅ ACTIVE[/bold green]"
-        )
-        title_firm = "HYRO TRADER CRYPTO FUTURES" if firm.lower() == "hyro_trader" else "FUNDING PIPS CHALLENGE"
-        panel = Panel(
-            content,
-            title=f"🛡️ RISK MANAGEMENT — {title_firm} ({summary['account_size']:,.0f} {curr})",
-            border_style="yellow",
-            expand=False
-        )
-        self.console.print(panel)
 
 
 def run_scanner(limit: int = 30, interval: int = 60, once: bool = False, firm: str = "funding_pips", capital: Optional[float] = None):
@@ -188,8 +156,15 @@ def run_scanner(limit: int = 30, interval: int = 60, once: bool = False, firm: s
             market_data = data_engine.fetch_all_markets()
             setups = signal_engine.scan_all_symbols(market_data, limit=limit)
 
-            console_ui.display_signals(setups, limit=limit, firm=firm_key)
+            # 1. Market Overview Box (Gold, Silver, Crude Oil on top)
+            console_ui.display_market_overview(market_data)
             console_ui.console.print()
+
+            # 2. Top Trade Signals (Exact 10 columns, clean reasoning)
+            console_ui.display_signals(setups, limit=limit)
+            console_ui.console.print()
+
+            # 3. Risk Management Summary Box
             console_ui.display_risk_summary(risk_manager, firm=firm_key, capital=capital)
 
             if once:
