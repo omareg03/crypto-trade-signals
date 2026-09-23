@@ -1,4 +1,4 @@
-# 🚀 QuantumTrader v2.0 — Multi-Asset 30-Signal Intelligence System
+# 🚀 QuantumTrader v2.1 — Multi-Asset 30-Signal Intelligence System
 
 A high-performance trading intelligence scanner tailored for **Funding Pips $5,000 Challenge (Match-Trader)** and **Coinbase**. 
 Provides continuous real-time market analysis, dynamic technical scoring, Risk:Reward management, and responsive live dashboards across desktop and mobile.

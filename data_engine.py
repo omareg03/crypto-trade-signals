@@ -27,22 +27,6 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# Baseline reference prices for instant pre-warming and resilient offline fallback
-BASELINE_PRICE_MAP = {
-    "BTC-USD": 86500.0, "ETH-USD": 2250.0, "SOL-USD": 135.0, "XRP-USD": 2.35,
-    "ADA-USD": 0.72, "DOGE-USD": 0.22, "AVAX-USD": 24.5, "LINK-USD": 14.8,
-    "DOT-USD": 4.8, "NEAR-USD": 4.2, "LTC-USD": 98.0, "BNB-USD": 620.0,
-    "EURUSD=X": 1.0850, "GBPUSD=X": 1.2950, "JPY=X": 153.20, "CAD=X": 1.4120,
-    "AUDUSD=X": 0.6350, "CHF=X": 0.8980, "NZDUSD=X": 0.5750, "EURGBP=X": 0.8380,
-    "EURJPY=X": 166.20, "GBPJPY=X": 198.40, "AUDJPY=X": 97.30, "EURCAD=X": 1.5320,
-    "GC=F": 4410.0, "SI=F": 32.50, "CL=F": 71.50, "BZ=F": 75.20,
-    "NG=F": 3.10, "HG=F": 4.25, "PL=F": 980.0,
-    "^IXIC": 20250.0, "^GSPC": 5950.0, "^DJI": 43800.0, "^RUT": 2150.0,
-    "^GDAXI": 20100.0, "^FTSE": 8400.0, "^N225": 38500.0,
-    "NVDA": 132.50, "TSLA": 245.00, "MSFT": 425.00, "AAPL": 232.00,
-    "AMZN": 210.00, "GOOGL": 185.00, "META": 742.00, "AMD": 122.00
-}
-
 
 class MarketDataEngine:
     """Thread-safe, rate-resilient multi-asset market data engine with memory caching."""
@@ -57,41 +41,6 @@ class MarketDataEngine:
             "Accept": "application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         })
-        # Pre-seed cache immediately so signals are 100% available at millisecond 0
-        self._preseed_baseline_cache()
-
-    def _generate_synthetic_candle_series(self, base_price: float, length: int = 30) -> List[float]:
-        """Generates realistic 30-day price variation around base price for robust analysis."""
-        prices = []
-        for i in range(length):
-            # Create natural oscillation with a slight trend
-            factor = 1.0 + (0.015 * math.sin(i * 0.45)) + (0.005 * math.cos(i * 0.25)) + ((i - length // 2) * 0.001)
-            prices.append(round(base_price * factor, 5))
-        return prices
-
-    def _preseed_baseline_cache(self) -> None:
-        """Fills cache with baseline data for all 46 monitored assets."""
-        now_iso = datetime.now().isoformat()
-        t_now = time.time() - 30.0  # Mark slightly back so fresh requests prioritize live data
-
-        for sym in config.ALL_WATCHED_SYMBOLS:
-            meta = config.ASSET_METADATA.get(sym, {})
-            base_p = BASELINE_PRICE_MAP.get(sym, 100.0)
-            candles = self._generate_synthetic_candle_series(base_p, length=30)
-            data = {
-                "symbol": sym,
-                "display_name": meta.get("name", sym),
-                "category": meta.get("category", "other"),
-                "match_trader": meta.get("match_trader", sym),
-                "cleo_symbol": meta.get("cleo_symbol", sym.replace("-USD", "USDT")),
-                "price": base_p,
-                "change_pct": 0.85,
-                "volume": 100000.0,
-                "historical_prices": candles,
-                "timestamp": now_iso,
-                "source": "baseline_prewarm"
-            }
-            self.cache[f"data_{sym}"] = {"data": data, "timestamp": t_now}
 
     def _is_cache_valid(self, cache_key: str, ttl: int) -> bool:
         """Check if cached entry is within TTL."""
@@ -208,44 +157,28 @@ class MarketDataEngine:
                 closes = prev_data.get("historical_prices", []) if prev_data else []
                 if closes and len(closes) >= 15:
                     closes = closes[:-1] + [cb_price]
-                else:
-                    closes = self._generate_synthetic_candle_series(cb_price, length=30)
 
-                data = {
-                    "symbol": symbol,
-                    "display_name": meta_info.get("name", symbol),
-                    "category": "crypto",
-                    "match_trader": mt_sym,
-                    "cleo_symbol": cleo_sym,
-                    "price": round(cb_price, 5),
-                    "change_pct": 0.5,
-                    "volume": 500000.0,
-                    "historical_prices": closes,
-                    "timestamp": datetime.now().isoformat(),
-                    "source": "coinbase_fallback"
-                }
-                self.cache[cache_key] = {"data": data, "timestamp": time.time()}
-                return data
+                    data = {
+                        "symbol": symbol,
+                        "display_name": meta_info.get("name", symbol),
+                        "category": "crypto",
+                        "match_trader": mt_sym,
+                        "cleo_symbol": cleo_sym,
+                        "price": round(cb_price, 5),
+                        "change_pct": 0.5,
+                        "volume": 500000.0,
+                        "historical_prices": closes,
+                        "timestamp": datetime.now().isoformat(),
+                        "source": "coinbase_fallback"
+                    }
+                    self.cache[cache_key] = {"data": data, "timestamp": time.time()}
+                    return data
 
         # If previous cached data exists (even expired or baseline), return it
         if cache_key in self.cache:
             return self.cache[cache_key]["data"]
 
-        # Final safety net: baseline data
-        base_p = BASELINE_PRICE_MAP.get(symbol, 100.0)
-        return {
-            "symbol": symbol,
-            "display_name": meta_info.get("name", symbol),
-            "category": category,
-            "match_trader": mt_sym,
-            "cleo_symbol": cleo_sym,
-            "price": base_p,
-            "change_pct": 0.0,
-            "volume": 0.0,
-            "historical_prices": self._generate_synthetic_candle_series(base_p, 30),
-            "timestamp": datetime.now().isoformat(),
-            "source": "baseline_fallback"
-        }
+        return None
 
     def fetch_all_markets(self, symbols: Optional[List[str]] = None, max_workers: int = 10) -> Dict[str, Dict[str, Any]]:
         """

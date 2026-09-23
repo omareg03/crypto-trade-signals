@@ -2,7 +2,7 @@
 title Push QuantumTrader to GitHub
 cd /d "%~dp0"
 echo ==============================================================================
-echo        QUANTUM TRADER v2.0 - PUSH TO GITHUB REPOSITORY
+echo        QUANTUM TRADER v2.1 - PUSH TO GITHUB REPOSITORY
 echo ==============================================================================
 echo.
 echo Checking repository status...
@@ -20,7 +20,7 @@ git branch -M main
 echo.
 echo Staging and committing all project files...
 git add .
-git commit -m "QuantumTrader v2.0 - Verified Top 30 Multi-Asset Trading Signals & Mobile Web Dashboard" 2>nul
+git commit -m "QuantumTrader v2.1 - Verified Top 30 Multi-Asset Trading Signals & Mobile Web Dashboard" 2>nul
 
 echo.
 echo Pushing to GitHub (main branch)...

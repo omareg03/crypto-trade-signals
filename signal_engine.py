@@ -84,16 +84,16 @@ class SignalEngine:
             stop = current * 0.97
             tp1 = current * 1.03
             tp2 = current * 1.06
-            rr = round((tp1 - current) / (current - stop), 2)
+            rr = round((current * 0.03) / (current * 0.03), 2)
             return TradeSetup(
                 symbol=symbol,
                 direction="LONG",
                 strategy="Trend Following",
                 confidence=confidence,
-                entry_price=round(current, 5),
-                stop_loss=round(stop, 5),
-                take_profit_1=round(tp1, 5),
-                take_profit_2=round(tp2, 5),
+                entry_price=current,
+                stop_loss=stop,
+                take_profit_1=tp1,
+                take_profit_2=tp2,
                 risk_reward=rr,
                 reasoning=f"EMA9({ema9_val:.2f}) > EMA21({ema21_val:.2f}), MACD hist {hist_str}",
                 display_name=display_name,
@@ -107,16 +107,16 @@ class SignalEngine:
             stop = current * 1.03
             tp1 = current * 0.97
             tp2 = current * 0.94
-            rr = round((current - tp1) / (stop - current), 2)
+            rr = round((current * 0.03) / (current * 0.03), 2)
             return TradeSetup(
                 symbol=symbol,
                 direction="SHORT",
                 strategy="Trend Following",
                 confidence=confidence,
-                entry_price=round(current, 5),
-                stop_loss=round(stop, 5),
-                take_profit_1=round(tp1, 5),
-                take_profit_2=round(tp2, 5),
+                entry_price=current,
+                stop_loss=stop,
+                take_profit_1=tp1,
+                take_profit_2=tp2,
                 risk_reward=rr,
                 reasoning=f"EMA9({ema9_val:.2f}) < EMA21({ema21_val:.2f}), MACD hist {hist_str}",
                 display_name=display_name,
@@ -151,17 +151,17 @@ class SignalEngine:
             stop = current * 0.96
             tp1 = bb["middle"]
             tp2 = bb["upper"]
-            rr = round((bb["middle"] - current) / max(1e-6, current - stop), 2)
+            rr = round((bb["middle"] - current) / (current - current * 0.96), 2)
             return TradeSetup(
                 symbol=symbol,
                 direction="LONG",
                 strategy="Mean Reversion",
                 confidence=confidence,
-                entry_price=round(current, 5),
-                stop_loss=round(stop, 5),
-                take_profit_1=round(tp1, 5),
-                take_profit_2=round(tp2, 5),
-                risk_reward=max(1.5, rr),
+                entry_price=current,
+                stop_loss=stop,
+                take_profit_1=tp1,
+                take_profit_2=tp2,
+                risk_reward=rr,
                 reasoning=f"RSI oversold ({rsi_val:.1f}), price near lower BB ({bb['lower']:.2f})",
                 display_name=display_name,
                 category=category,
@@ -174,17 +174,17 @@ class SignalEngine:
             stop = current * 1.04
             tp1 = bb["middle"]
             tp2 = bb["lower"]
-            rr = round((current - bb["middle"]) / max(1e-6, stop - current), 2)
+            rr = round((current - bb["middle"]) / (current * 1.04 - current), 2)
             return TradeSetup(
                 symbol=symbol,
                 direction="SHORT",
                 strategy="Mean Reversion",
                 confidence=confidence,
-                entry_price=round(current, 5),
-                stop_loss=round(stop, 5),
-                take_profit_1=round(tp1, 5),
-                take_profit_2=round(tp2, 5),
-                risk_reward=max(1.5, rr),
+                entry_price=current,
+                stop_loss=stop,
+                take_profit_1=tp1,
+                take_profit_2=tp2,
+                risk_reward=rr,
                 reasoning=f"RSI overbought ({rsi_val:.1f}), price near upper BB ({bb['upper']:.2f})",
                 display_name=display_name,
                 category=category,
@@ -223,10 +223,10 @@ class SignalEngine:
                 direction="LONG",
                 strategy="Momentum",
                 confidence=confidence,
-                entry_price=round(current, 5),
-                stop_loss=round(current * 0.975, 5),
-                take_profit_1=round(current * 1.04, 5),
-                take_profit_2=round(current * 1.08, 5),
+                entry_price=current,
+                stop_loss=current * 0.975,
+                take_profit_1=current * 1.04,
+                take_profit_2=current * 1.08,
                 risk_reward=round(0.04 / 0.025, 2),
                 reasoning=f"Momentum: RSI={rsi_val:.1f} (bullish zone), MACD hist={hist_str}",
                 display_name=display_name,
@@ -235,64 +235,6 @@ class SignalEngine:
                 cleo_symbol=cleo_sym
             )
         return None
-
-    def _trend_continuation(self, symbol: str, prices: List[float]) -> Optional[TradeSetup]:
-        """
-        Trend Continuation baseline: Evaluates EMA9 vs EMA21 and RSI to ensure
-        monitored assets can always produce a scored setup, guaranteeing Top 10 and
-        Top 30 scans are never blank or zero.
-        """
-        if len(prices) < 21:
-            return None
-
-        ema_9 = self.analyzer.calculate_ema(prices, 9).get("value")
-        ema_21 = self.analyzer.calculate_ema(prices, 21).get("value")
-        rsi_res = self.analyzer.calculate_rsi(prices, 14)
-        rsi_val = rsi_res.get("value") or 50.0
-
-        if ema_9 is None or ema_21 is None:
-            return None
-
-        current = prices[-1]
-        meta = config.ASSET_METADATA.get(symbol, {})
-        display_name = meta.get("name", symbol)
-        category = meta.get("category", "other")
-        mt_sym = meta.get("match_trader", symbol)
-        cleo_sym = meta.get("cleo_symbol", symbol.replace("-USD", "USDT"))
-
-        is_bullish = ema_9 >= ema_21
-        direction = "LONG" if is_bullish else "SHORT"
-        confidence = min(72, max(52, int(55 + abs(rsi_val - 50.0) * 0.4)))
-
-        if is_bullish:
-            stop = current * 0.97
-            tp1 = current * 1.045
-            tp2 = current * 1.06
-            reasoning = f"EMA9({ema_9:.2f}) > EMA21({ema_21:.2f}), RSI={rsi_val:.1f} bullish trend"
-            rr = round((tp1 - current) / (current - stop), 2)
-        else:
-            stop = current * 1.03
-            tp1 = current * 0.955
-            tp2 = current * 0.94
-            reasoning = f"EMA9({ema_9:.2f}) < EMA21({ema_21:.2f}), RSI={rsi_val:.1f} bearish trend"
-            rr = round((current - tp1) / (stop - current), 2)
-
-        return TradeSetup(
-            symbol=symbol,
-            direction=direction,
-            strategy="Trend Following",
-            confidence=confidence,
-            entry_price=round(current, 5),
-            stop_loss=round(stop, 5),
-            take_profit_1=round(tp1, 5),
-            take_profit_2=round(tp2, 5),
-            risk_reward=rr,
-            reasoning=reasoning,
-            display_name=display_name,
-            category=category,
-            match_trader_symbol=mt_sym,
-            cleo_symbol=cleo_sym
-        )
 
     def score_symbol(self, symbol: str, prices: List[float]) -> Optional[TradeSetup]:
         """Score the best setup for a symbol by running all strategies and selecting highest confidence."""
@@ -313,10 +255,6 @@ class SignalEngine:
                     best_setup = setup
             except Exception as e:
                 self.logger.debug(f"Strategy {strategy_fn.__name__} error for {symbol}: {e}")
-
-        # If primary strategies didn't trigger, use baseline trend continuation
-        if best_setup is None:
-            best_setup = self._trend_continuation(symbol, prices)
 
         return best_setup
 
