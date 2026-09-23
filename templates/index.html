@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>QuantumTrader — Multi-Asset Live Signals</title>
+    <title>QuantumTrader v2.0 — Multi-Asset Live Signals & Prop Firm Intelligence</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -39,6 +39,10 @@
             box-shadow: 0 0 12px rgba(210, 153, 34, 0.25);
             border-color: #d29922;
         }
+        .neon-border-cyan {
+            box-shadow: 0 0 12px rgba(88, 166, 255, 0.25);
+            border-color: #58a6ff;
+        }
         .table-row-hover:hover {
             background-color: rgba(56, 139, 253, 0.08);
         }
@@ -63,7 +67,7 @@
     <div class="max-w-7xl mx-auto w-full flex-grow">
         
         <!-- TOP HEADER -->
-        <header class="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-cardBorder pb-4">
+        <header class="mb-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-cardBorder pb-4">
             <div>
                 <div class="flex items-center gap-3">
                     <div class="w-3.5 h-3.5 rounded-full bg-emerald-500 animate-ping"></div>
@@ -75,7 +79,7 @@
                     </span>
                 </div>
                 <p class="text-xs sm:text-sm text-gray-400 mt-1 flex items-center gap-2">
-                    <span>Funding Pips $5,000 Challenge Signals</span>
+                    <span id="headerSubText" class="text-gray-300 font-medium">Funding Pips & Hyro Trader Multi-Asset Intelligence</span>
                     <span>•</span>
                     <span class="text-cyan-400 font-mono" id="lastUpdatedText">Connecting...</span>
                 </p>
@@ -103,6 +107,99 @@
                 </button>
             </div>
         </header>
+
+        <!-- DYNAMIC PROP FIRM & CAPITAL TIER INTERACTIVE SWITCHER -->
+        <div class="mb-6 bg-card border border-cardBorder rounded-xl p-4 sm:p-5 shadow-2xl flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 neon-border-cyan">
+            <!-- Prop Firm Selector -->
+            <div class="flex flex-col sm:flex-row items-start sm:items-center gap-2.5 w-full lg:w-auto">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-400 whitespace-nowrap">Prop Firm:</span>
+                <div class="inline-flex rounded-lg border border-cardBorder bg-dark/90 p-1 text-xs font-semibold w-full sm:w-auto shadow-inner">
+                    <button id="btnFirmFundingPips" onclick="setPropFirm('funding_pips')" class="flex-1 sm:flex-none px-3.5 py-1.5 rounded-md transition bg-emerald-600 text-white shadow font-bold flex items-center justify-center gap-1.5">
+                        <span>🎯</span> Funding Pips <span class="text-[10px] opacity-80 hidden sm:inline">(Match-Trader)</span>
+                    </button>
+                    <button id="btnFirmHyroTrader" onclick="setPropFirm('hyro_trader')" class="flex-1 sm:flex-none px-3.5 py-1.5 rounded-md transition text-gray-400 hover:text-white font-bold flex items-center justify-center gap-1.5">
+                        <span>⚡</span> Hyro Trader <span class="text-[10px] opacity-80 hidden sm:inline">(Cleo.finance)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Capital Size Selector Pills -->
+            <div class="flex flex-wrap items-center gap-1.5 sm:gap-2 w-full lg:w-auto">
+                <span class="text-xs font-bold uppercase tracking-wider text-gray-400 mr-1 whitespace-nowrap">Challenge Capital:</span>
+                <div class="flex flex-wrap gap-1.5" id="capitalPillsContainer">
+                    <button data-capital="5000" onclick="setCapitalTier(5000)" class="cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white">
+                        $5K
+                    </button>
+                    <button data-capital="10000" onclick="setCapitalTier(10000)" class="cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white">
+                        $10K
+                    </button>
+                    <button data-capital="25000" onclick="setCapitalTier(25000)" class="cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white">
+                        $25K
+                    </button>
+                    <button data-capital="50000" onclick="setCapitalTier(50000)" class="cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white">
+                        $50K
+                    </button>
+                    <button data-capital="100000" onclick="setCapitalTier(100000)" class="cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white">
+                        $100K
+                    </button>
+                    <button data-capital="200000" onclick="setCapitalTier(200000)" class="cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white">
+                        $200K
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- RISK MANAGEMENT & CHALLENGE RULES CARD (DYNAMICALLY UPDATED) -->
+        <section id="riskSectionCard" class="bg-card rounded-xl p-5 sm:p-6 border border-yellow-500/40 neon-border-yellow mb-8 shadow-2xl transition duration-300">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 border-b border-cardBorder pb-3">
+                <div class="flex items-center gap-2">
+                    <span class="text-xl" id="riskFirmIcon">🛡️</span>
+                    <h2 class="text-base sm:text-lg font-bold text-yellow-400 tracking-wide" id="riskSectionTitle">
+                        RISK MANAGEMENT — FUNDING PIPS $5,000 2-STEP FLEX
+                    </h2>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-700" id="riskStatusBadge">
+                        ✅ STATUS: ACTIVE
+                    </span>
+                    <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-cyan-950 text-cyan-400 border border-cyan-700 font-mono" id="riskPlatformBadge">
+                        Match-Trader
+                    </span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs sm:text-sm">
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Account Size</p>
+                    <p class="text-base sm:text-lg font-bold text-white mt-0.5" id="riskAccountSize">$5,000.00</p>
+                    <p class="text-[10px] text-gray-500" id="riskAccountNote">Starting Equity (USD)</p>
+                </div>
+
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Risk Per Trade</p>
+                    <p class="text-base sm:text-lg font-bold text-emerald-400 mt-0.5" id="riskTradeRange">1.0% - 2.0%</p>
+                    <p class="text-[10px] text-gray-500" id="riskTradeAmounts">$50.00 - $100.00 max</p>
+                </div>
+
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Max Daily Drawdown</p>
+                    <p class="text-base sm:text-lg font-bold text-yellow-400 mt-0.5" id="riskDailyLimit">5.0% ($250.00)</p>
+                    <p class="text-[10px] text-yellow-600 font-semibold">Strict Rule Stop</p>
+                </div>
+
+                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Max Total Loss</p>
+                    <p class="text-base sm:text-lg font-bold text-red-400 mt-0.5" id="riskTotalLimit">10.0% ($500.00)</p>
+                    <p class="text-[10px] text-red-500 font-semibold">Challenge Limit</p>
+                </div>
+
+                <div class="col-span-2 sm:col-span-1 bg-dark/70 p-3 rounded-lg border border-cardBorder">
+                    <p class="text-gray-400 text-[11px] uppercase">Correlation & Stop</p>
+                    <p class="text-base sm:text-lg font-bold text-cyan-400 mt-0.5" id="riskCorrelationText">Max 3 Correlated</p>
+                    <p class="text-[10px] text-emerald-400 font-semibold">SL Always Enforced</p>
+                </div>
+            </div>
+        </section>
 
         <!-- CATEGORY TABS & SEARCH BAR -->
         <div class="mb-5 flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
@@ -151,7 +248,7 @@
                             <th class="py-3 px-3 text-right">Stop Loss</th>
                             <th class="py-3 px-3 text-right">TP1 Target</th>
                             <th class="py-3 px-3 text-center">R:R</th>
-                            <th class="py-3 px-3">Match-Trader</th>
+                            <th class="py-3 px-3" id="thPlatformCol">Platform Symbol</th>
                             <th class="py-3 px-4">Technical Reasoning</th>
                             <th class="py-3 px-3 text-center">Action</th>
                         </tr>
@@ -178,67 +275,15 @@
             </div>
         </div>
 
-        <!-- RISK MANAGEMENT & FUNDING PIPS CHALLENGE BOX -->
-        <section class="bg-card rounded-xl p-5 sm:p-6 border border-yellow-500/40 neon-border-yellow mb-8 shadow-2xl">
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 border-b border-cardBorder pb-3">
-                <div class="flex items-center gap-2">
-                    <span class="text-xl">🛡️</span>
-                    <h2 class="text-base sm:text-lg font-bold text-yellow-400 tracking-wide">
-                        RISK MANAGEMENT — FUNDING PIPS $5,000 2-STEP FLEX
-                    </h2>
-                </div>
-                <div class="flex items-center gap-2">
-                    <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-700">
-                        ✅ STATUS: ACTIVE
-                    </span>
-                    <span class="px-2.5 py-0.5 rounded text-xs font-bold bg-cyan-950 text-cyan-400 border border-cyan-700">
-                        Match-Trader
-                    </span>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 text-xs sm:text-sm">
-                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
-                    <p class="text-gray-400 text-[11px] uppercase">Account Size</p>
-                    <p class="text-base sm:text-lg font-bold text-white mt-0.5">$5,000.00</p>
-                    <p class="text-[10px] text-gray-500">Starting Equity</p>
-                </div>
-
-                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
-                    <p class="text-gray-400 text-[11px] uppercase">Risk Per Trade</p>
-                    <p class="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">1.0% - 2.0%</p>
-                    <p class="text-[10px] text-gray-500">$50.00 - $100.00 max</p>
-                </div>
-
-                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
-                    <p class="text-gray-400 text-[11px] uppercase">Max Daily Drawdown</p>
-                    <p class="text-base sm:text-lg font-bold text-yellow-400 mt-0.5">5.0% ($250.00)</p>
-                    <p class="text-[10px] text-yellow-600 font-semibold">Strict Rule Stop</p>
-                </div>
-
-                <div class="bg-dark/70 p-3 rounded-lg border border-cardBorder">
-                    <p class="text-gray-400 text-[11px] uppercase">Max Total Loss</p>
-                    <p class="text-base sm:text-lg font-bold text-red-400 mt-0.5">10.0% ($500.00)</p>
-                    <p class="text-[10px] text-red-500 font-semibold">Challenge Limit</p>
-                </div>
-
-                <div class="col-span-2 sm:col-span-1 bg-dark/70 p-3 rounded-lg border border-cardBorder">
-                    <p class="text-gray-400 text-[11px] uppercase">Correlation & Stop</p>
-                    <p class="text-base sm:text-lg font-bold text-cyan-400 mt-0.5">Max 3 Correlated</p>
-                    <p class="text-[10px] text-emerald-400 font-semibold">SL Always Enforced</p>
-                </div>
-            </div>
-        </section>
-
     </div>
 
-    <!-- MODAL: MATCH-TRADER LOT SIZE CALCULATOR -->
+    <!-- MODAL: DYNAMIC POSITION SIZING CALCULATOR -->
     <div id="lotModal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
         <div class="bg-card border border-cardBorder rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl neon-border-green">
             <div class="flex justify-between items-center border-b border-cardBorder pb-3 mb-4">
                 <div class="flex items-center gap-2">
-                    <span class="text-xl">🧮</span>
-                    <h3 class="font-bold text-white text-base">Match-Trader Lot Sizing</h3>
+                    <span class="text-xl" id="modalIcon">🧮</span>
+                    <h3 class="font-bold text-white text-base" id="modalTitle">Position Sizing Calculator</h3>
                 </div>
                 <button onclick="closeModal()" class="text-gray-400 hover:text-white text-lg font-bold">&times;</button>
             </div>
@@ -262,24 +307,25 @@
 
                 <div class="grid grid-cols-2 gap-3">
                     <div>
-                        <label class="block text-gray-400 mb-1">Account Balance ($)</label>
+                        <label class="block text-gray-400 mb-1" id="modalAccountLabel">Account Balance ($)</label>
                         <input type="number" id="modalAccount" value="5000" oninput="recalcModalLot()" class="w-full bg-dark border border-cardBorder rounded p-2 text-white font-mono">
                     </div>
                     <div>
                         <label class="block text-gray-400 mb-1">Risk Amount</label>
                         <select id="modalRiskPct" onchange="recalcModalLot()" class="w-full bg-dark border border-cardBorder rounded p-2 text-white font-mono">
-                            <option value="1.0" selected>1.0% ($50.00)</option>
-                            <option value="1.5">1.5% ($75.00)</option>
-                            <option value="2.0">2.0% ($100.00)</option>
+                            <option value="1.0" selected>1.0% (Conservative)</option>
+                            <option value="1.5">1.5% (Balanced)</option>
+                            <option value="2.0">2.0% (Aggressive Max)</option>
                         </select>
                     </div>
                 </div>
 
                 <!-- Calculation Result Box -->
                 <div class="mt-4 p-4 rounded-xl bg-gradient-to-br from-emerald-950/60 to-dark border border-emerald-500/40 text-center">
-                    <p class="text-xs text-emerald-400 uppercase tracking-wider font-semibold">Recommended Match-Trader Position</p>
-                    <p class="text-3xl font-black text-white font-mono my-1" id="modalLotResult">0.00 Lots</p>
+                    <p class="text-xs text-emerald-400 uppercase tracking-wider font-semibold" id="modalResultLabel">Recommended Position Size</p>
+                    <p class="text-2xl sm:text-3xl font-black text-white font-mono my-1" id="modalLotResult">0.00 Lots</p>
                     <p class="text-xs text-gray-400" id="modalRiskResult">Risk: $50.00 (1.0%)</p>
+                    <p class="text-[11px] text-cyan-400 mt-1 font-mono" id="modalExtraResult"></p>
                 </div>
             </div>
 
@@ -291,13 +337,66 @@
         </div>
     </div>
 
-    <!-- JAVASCRIPT LOGIC -->
+    <!-- JAVASCRIPT APPLICATION LOGIC -->
     <script>
         let currentLimit = 30;
         let currentCategory = 'all';
+        let currentFirm = localStorage.getItem('qt_prop_firm') || 'funding_pips';
+        let currentCapital = parseInt(localStorage.getItem('qt_capital_tier')) || (currentFirm === 'hyro_trader' ? 200000 : 5000);
         let rawSignals = [];
+        let renderedSignals = [];
         let countdownSec = 60;
         let countdownTimer = null;
+        let retryTimer = null;
+        let activeModalSig = null;
+
+        // Prop Firm Switcher
+        function setPropFirm(firm) {
+            currentFirm = firm;
+            localStorage.setItem('qt_prop_firm', firm);
+
+            const btnFP = document.getElementById('btnFirmFundingPips');
+            const btnHT = document.getElementById('btnFirmHyroTrader');
+
+            if (firm === 'funding_pips') {
+                btnFP.className = "flex-1 sm:flex-none px-3.5 py-1.5 rounded-md transition bg-emerald-600 text-white shadow font-bold flex items-center justify-center gap-1.5";
+                btnHT.className = "flex-1 sm:flex-none px-3.5 py-1.5 rounded-md transition text-gray-400 hover:text-white font-bold flex items-center justify-center gap-1.5";
+                // If switching and current capital was defaulted to 200k, adjust or keep
+                if (currentCapital === 200000 && !localStorage.getItem('qt_capital_tier_explicit')) {
+                    currentCapital = 5000;
+                }
+            } else {
+                btnHT.className = "flex-1 sm:flex-none px-3.5 py-1.5 rounded-md transition bg-cyan-600 text-white shadow font-bold flex items-center justify-center gap-1.5";
+                btnFP.className = "flex-1 sm:flex-none px-3.5 py-1.5 rounded-md transition text-gray-400 hover:text-white font-bold flex items-center justify-center gap-1.5";
+                // Default Hyro Trader to 200K if not explicitly picked
+                if (!localStorage.getItem('qt_capital_tier_explicit')) {
+                    currentCapital = 200000;
+                }
+            }
+
+            updateCapitalPillsUI();
+            fetchSignals();
+        }
+
+        // Capital Tier Switcher
+        function setCapitalTier(amount) {
+            currentCapital = amount;
+            localStorage.setItem('qt_capital_tier', amount);
+            localStorage.setItem('qt_capital_tier_explicit', 'true');
+            updateCapitalPillsUI();
+            fetchSignals();
+        }
+
+        function updateCapitalPillsUI() {
+            document.querySelectorAll('.cap-pill').forEach(pill => {
+                const cap = parseInt(pill.getAttribute('data-capital'));
+                if (cap === currentCapital) {
+                    pill.className = "cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-emerald-500 bg-emerald-600 text-white shadow-lg";
+                } else {
+                    pill.className = "cap-pill px-3 py-1.5 rounded-lg text-xs font-bold transition border border-cardBorder bg-dark/80 text-gray-300 hover:text-white";
+                }
+            });
+        }
 
         function setViewMode(limit) {
             currentLimit = limit;
@@ -313,8 +412,6 @@
             }
             fetchSignals();
         }
-
-        let renderedSignals = [];
 
         function setCategory(cat, btnElement) {
             currentCategory = cat;
@@ -359,12 +456,14 @@
             refreshIcon.classList.add('animate-spin');
             refreshBtnText.innerText = 'Scanning...';
 
+            const url = `/api/signals?top=${currentLimit}&category=${currentCategory}&firm=${currentFirm}&capital=${currentCapital}`;
+
             try {
-                const response = await fetch(`/api/signals?top=${currentLimit}&category=${currentCategory}`);
+                const response = await fetch(url);
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    rawSignals = data.signals;
+                    rawSignals = data.signals || [];
                     document.getElementById('lastUpdatedText').innerText = `Updated: ${data.last_updated || 'Just now'}`;
 
                     // Update Category counts
@@ -375,14 +474,66 @@
                         }
                     }
 
+                    // Update Dynamic Risk Management Card
+                    if (data.risk_summary) {
+                        updateRiskSummaryCard(data.risk_summary);
+                    }
+
+                    // If empty (during initial background sync), retry in 1.5s rather than freeze
+                    if (rawSignals.length === 0) {
+                        clearTimeout(retryTimer);
+                        retryTimer = setTimeout(fetchSignals, 1500);
+                    } else {
+                        clearTimeout(retryTimer);
+                    }
+
                     renderSignals(rawSignals);
                 }
             } catch (error) {
                 console.error('Error fetching signals:', error);
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(fetchSignals, 2000);
             } finally {
                 refreshIcon.classList.remove('animate-spin');
                 refreshBtnText.innerText = 'Refresh';
             }
+        }
+
+        function updateRiskSummaryCard(summary) {
+            const isHyro = (summary.firm === 'hyro_trader');
+            const curr = summary.currency || 'USD';
+            const card = document.getElementById('riskSectionCard');
+            const icon = document.getElementById('riskFirmIcon');
+            const title = document.getElementById('riskSectionTitle');
+            const platBadge = document.getElementById('riskPlatformBadge');
+            const thPlat = document.getElementById('thPlatformCol');
+
+            if (isHyro) {
+                card.className = "bg-card rounded-xl p-5 sm:p-6 border border-cyan-500/40 neon-border-cyan mb-8 shadow-2xl transition duration-300";
+                icon.innerText = "⚡";
+                title.innerText = `RISK MANAGEMENT — HYRO TRADER ${summary.account_size.toLocaleString()} USDT CHALLENGE`;
+                title.className = "text-base sm:text-lg font-bold text-cyan-400 tracking-wide";
+                platBadge.innerText = "Cleo.finance (Bybit)";
+                platBadge.className = "px-2.5 py-0.5 rounded text-xs font-bold bg-cyan-950 text-cyan-400 border border-cyan-700 font-mono";
+                if (thPlat) thPlat.innerText = "Cleo.finance";
+            } else {
+                card.className = "bg-card rounded-xl p-5 sm:p-6 border border-yellow-500/40 neon-border-yellow mb-8 shadow-2xl transition duration-300";
+                icon.innerText = "🛡️";
+                title.innerText = `RISK MANAGEMENT — FUNDING PIPS $${summary.account_size.toLocaleString()} 2-STEP FLEX`;
+                title.className = "text-base sm:text-lg font-bold text-yellow-400 tracking-wide";
+                platBadge.innerText = "Match-Trader";
+                platBadge.className = "px-2.5 py-0.5 rounded text-xs font-bold bg-purple-950 text-purple-400 border border-purple-700 font-mono";
+                if (thPlat) thPlat.innerText = "Match-Trader";
+            }
+
+            document.getElementById('riskAccountSize').innerText = `$${summary.account_size.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+            document.getElementById('riskAccountNote').innerText = `Starting Equity (${curr})`;
+
+            document.getElementById('riskTradeRange').innerText = `${summary.max_daily_drawdown_pct ? '1.0% - 2.0%' : '1.0% - 2.0%'}`;
+            document.getElementById('riskTradeAmounts').innerText = `$${summary.recommended_risk_1pct_usd.toLocaleString(undefined, {minimumFractionDigits: 2})} - $${summary.recommended_risk_2pct_usd.toLocaleString(undefined, {minimumFractionDigits: 2})} max`;
+
+            document.getElementById('riskDailyLimit').innerText = `5.0% ($${summary.max_daily_drawdown_usd.toLocaleString(undefined, {minimumFractionDigits: 2})})`;
+            document.getElementById('riskTotalLimit').innerText = `10.0% ($${summary.max_total_drawdown_usd.toLocaleString(undefined, {minimumFractionDigits: 2})})`;
         }
 
         function filterLocalSignals() {
@@ -395,7 +546,8 @@
                 (s.display_name && s.display_name.toLowerCase().includes(query)) ||
                 (s.symbol && s.symbol.toLowerCase().includes(query)) ||
                 (s.strategy && s.strategy.toLowerCase().includes(query)) ||
-                (s.match_trader_symbol && s.match_trader_symbol.toLowerCase().includes(query))
+                (s.match_trader_symbol && s.match_trader_symbol.toLowerCase().includes(query)) ||
+                (s.cleo_symbol && s.cleo_symbol.toLowerCase().includes(query))
             );
             renderSignals(filtered);
         }
@@ -408,9 +560,24 @@
             tbody.innerHTML = '';
             mobileContainer.innerHTML = '';
 
+            const isHyro = (currentFirm === 'hyro_trader');
+
             if (renderedSignals.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="12" class="py-8 text-center text-gray-400">No signals match current filters.</td></tr>';
-                mobileContainer.innerHTML = '<div class="p-6 text-center text-gray-400 bg-card rounded-lg">No signals found.</div>';
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="12" class="py-12 text-center text-gray-400">
+                            <div class="flex flex-col items-center justify-center gap-3">
+                                <div class="w-7 h-7 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+                                <span class="text-sm font-semibold text-emerald-400">Fetching live market intelligence across 46 assets...</span>
+                                <span class="text-xs text-gray-500">Auto-syncing in 1.5s</span>
+                            </div>
+                        </td>
+                    </tr>`;
+                mobileContainer.innerHTML = `
+                    <div class="p-8 text-center text-gray-400 bg-card rounded-lg border border-cardBorder">
+                        <div class="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-2"></div>
+                        <p class="text-sm text-emerald-400 font-medium">Fetching live market intelligence...</p>
+                    </div>`;
                 return;
             }
 
@@ -436,6 +603,11 @@
                 };
                 const catClass = catPills[sig.category] || 'bg-gray-800 text-gray-300 border-gray-700';
 
+                // Platform symbol
+                const platformSym = isHyro ? (sig.cleo_symbol || sig.symbol.replace('-USD', 'USDT')) : (sig.match_trader_symbol || sig.symbol);
+                const platformSymColor = isHyro ? 'text-cyan-300 font-semibold' : 'text-purple-300 font-semibold';
+                const calcBtnText = isHyro ? 'Calc Size' : 'Calc Lot';
+
                 // DESKTOP TABLE ROW
                 const tr = document.createElement('tr');
                 tr.className = 'table-row-hover transition border-b border-cardBorder text-xs sm:text-sm';
@@ -459,11 +631,11 @@
                     <td class="py-3 px-3 text-right text-red-400">${formatPrice(sig.stop_loss)}</td>
                     <td class="py-3 px-3 text-right text-emerald-400">${formatPrice(sig.take_profit_1)}</td>
                     <td class="py-3 px-3 text-center font-bold text-cyan-300">${sig.risk_reward.toFixed(1)}</td>
-                    <td class="py-3 px-3 font-mono text-purple-300 font-semibold text-xs">${sig.match_trader_symbol || sig.symbol}</td>
+                    <td class="py-3 px-3 font-mono ${platformSymColor} text-xs">${platformSym}</td>
                     <td class="py-3 px-4 text-gray-400 text-xs max-w-xs truncate" title="${sig.reasoning}">${sig.reasoning}</td>
                     <td class="py-3 px-3 text-center">
-                        <button onclick="openModalByIndex(${index})" class="px-2 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs transition active:scale-95">
-                            Calc Lot
+                        <button onclick="openModalByIndex(${index})" class="px-2.5 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs transition active:scale-95 whitespace-nowrap font-medium">
+                            ${calcBtnText}
                         </button>
                     </td>
                 `;
@@ -506,9 +678,11 @@
                     </div>
 
                     <div class="flex justify-between items-center pt-2 border-t border-cardBorder">
-                        <span class="text-[11px] font-mono text-purple-300">Match-Trader: <strong>${sig.match_trader_symbol || sig.symbol}</strong></span>
+                        <span class="text-[11px] font-mono ${platformSymColor}">
+                            ${isHyro ? 'Cleo.finance' : 'Match-Trader'}: <strong>${platformSym}</strong>
+                        </span>
                         <button onclick="openModalByIndex(${index})" class="px-3 py-1 bg-cyan-900/60 hover:bg-cyan-800 text-cyan-300 border border-cyan-700 rounded text-xs font-semibold">
-                            Calc Lot Size
+                            ${calcBtnText}
                         </button>
                     </div>
                 `;
@@ -522,8 +696,6 @@
         }
 
         // Modal Logic
-        let activeModalSig = null;
-
         function openModalByIndex(index) {
             const sig = renderedSignals[index];
             if (!sig) return;
@@ -535,9 +707,25 @@
                 return openModalByIndex(sig);
             }
             activeModalSig = sig;
-            document.getElementById('modalSymbol').value = `${sig.display_name} (${sig.match_trader_symbol || sig.symbol})`;
+            const isHyro = (currentFirm === 'hyro_trader');
+
+            document.getElementById('modalTitle').innerText = isHyro 
+                ? 'Cleo.finance Crypto Futures Sizing' 
+                : 'Match-Trader Lot Sizing';
+            document.getElementById('modalIcon').innerText = isHyro ? '⚡' : '🧮';
+            document.getElementById('modalResultLabel').innerText = isHyro 
+                ? 'Recommended Bybit / Cleo Position' 
+                : 'Recommended Match-Trader Position';
+
+            const symText = isHyro 
+                ? `${sig.display_name} (${sig.cleo_symbol || sig.symbol})` 
+                : `${sig.display_name} (${sig.match_trader_symbol || sig.symbol})`;
+
+            document.getElementById('modalSymbol').value = symText;
             document.getElementById('modalEntry').value = sig.entry_price;
             document.getElementById('modalStop').value = sig.stop_loss;
+            document.getElementById('modalAccount').value = currentCapital;
+            document.getElementById('modalAccountLabel').innerText = isHyro ? 'Account Balance (USDT)' : 'Account Balance ($)';
             document.getElementById('modalRiskPct').value = "1.0";
             document.getElementById('lotModal').classList.remove('hidden');
             recalcModalLot();
@@ -550,7 +738,7 @@
         async function recalcModalLot() {
             const entry = parseFloat(document.getElementById('modalEntry').value) || 0;
             const stop = parseFloat(document.getElementById('modalStop').value) || 0;
-            const account = parseFloat(document.getElementById('modalAccount').value) || 5000;
+            const account = parseFloat(document.getElementById('modalAccount').value) || currentCapital;
             const riskPct = parseFloat(document.getElementById('modalRiskPct').value) || 1.0;
             const symbol = activeModalSig ? activeModalSig.symbol : "BTC-USD";
 
@@ -563,19 +751,29 @@
                         entry: entry,
                         stop_loss: stop,
                         account_size: account,
-                        risk_pct: riskPct
+                        risk_pct: riskPct,
+                        firm: currentFirm
                     })
                 });
                 const data = await res.json();
-                document.getElementById('modalLotResult').innerText = `${data.lot_size} Lots`;
-                document.getElementById('modalRiskResult').innerText = `Max Risk: $${data.risk_usd.toFixed(2)} (${riskPct}%) | Distance: ${data.distance}`;
+                const isHyro = (currentFirm === 'hyro_trader');
+
+                if (isHyro) {
+                    document.getElementById('modalLotResult').innerText = `${data.contracts} Contracts`;
+                    document.getElementById('modalRiskResult').innerText = `Max Risk: $${data.risk_usd.toFixed(2)} USDT (${riskPct}%) | Distance: ${data.distance}`;
+                    document.getElementById('modalExtraResult').innerText = `Notional Value: $${data.notional_usd.toLocaleString()} USDT | Est. 10x Margin: $${data.margin_10x.toLocaleString()} USDT`;
+                } else {
+                    document.getElementById('modalLotResult').innerText = `${data.lot_size} Lots`;
+                    document.getElementById('modalRiskResult').innerText = `Max Risk: $${data.risk_usd.toFixed(2)} (${riskPct}%) | Distance: ${data.distance}`;
+                    document.getElementById('modalExtraResult').innerText = `Position: ${data.position_display || (data.lot_size + ' Lots')}`;
+                }
             } catch (err) {
                 console.error(err);
             }
         }
 
-        // Initial launch
-        fetchSignals();
+        // Initialize UI with saved settings
+        setPropFirm(currentFirm);
         startCountdown();
     </script>
 </body>

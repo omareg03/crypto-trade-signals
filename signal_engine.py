@@ -32,6 +32,7 @@ class TradeSetup:
     risk_reward: float
     reasoning: str
     match_trader_symbol: str = ""
+    cleo_symbol: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -66,6 +67,7 @@ class SignalEngine:
         display_name = meta.get("name", symbol)
         category = meta.get("category", "other")
         mt_sym = meta.get("match_trader", symbol)
+        cleo_sym = meta.get("cleo_symbol", symbol.replace("-USD", "USDT"))
 
         # Bullish Mean Reversion: Oversold RSI (<35) and price near or below lower BB
         if rsi_val <= 35.0 and current <= lower_bb * 1.015:
@@ -91,7 +93,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=rr,
                 reasoning=f"RSI oversold ({rsi_val:.1f}), bounced off lower BB ({lower_bb:.2f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         # Bearish Mean Reversion: Overbought RSI (>65) and price near or above upper BB
@@ -118,7 +121,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=rr,
                 reasoning=f"RSI overbought ({rsi_val:.1f}), rejected upper BB ({upper_bb:.2f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         return None
@@ -141,6 +145,7 @@ class SignalEngine:
         display_name = meta.get("name", symbol)
         category = meta.get("category", "other")
         mt_sym = meta.get("match_trader", symbol)
+        cleo_sym = meta.get("cleo_symbol", symbol.replace("-USD", "USDT"))
 
         # Bullish Trend: EMA9 > EMA21 and MACD histogram positive
         if ema_9 > ema_21 and macd_hist > 0:
@@ -165,7 +170,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=max(1.5, rr),
                 reasoning=f"Bullish EMA9({ema_9:.2f}) > EMA21({ema_21:.2f}), MACD hist (+{macd_hist:.4f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         # Bearish Trend: EMA9 < EMA21 and MACD histogram negative
@@ -191,7 +197,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=max(1.5, rr),
                 reasoning=f"Bearish EMA9({ema_9:.2f}) < EMA21({ema_21:.2f}), MACD hist ({macd_hist:.4f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         return None
@@ -213,6 +220,7 @@ class SignalEngine:
         display_name = meta.get("name", symbol)
         category = meta.get("category", "other")
         mt_sym = meta.get("match_trader", symbol)
+        cleo_sym = meta.get("cleo_symbol", symbol.replace("-USD", "USDT"))
 
         # Bullish Momentum: RSI in power zone 52-68 with positive histogram
         if 52.0 <= rsi_val <= 68.0 and macd_hist > 0:
@@ -236,7 +244,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=max(1.5, rr),
                 reasoning=f"Momentum: RSI {rsi_val:.1f} bullish zone, expanding MACD (+{macd_hist:.4f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         # Bearish Momentum: RSI in sell zone 32-48 with negative histogram
@@ -261,7 +270,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=max(1.5, rr),
                 reasoning=f"Momentum: RSI {rsi_val:.1f} bearish zone, expanding MACD ({macd_hist:.4f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         return None
@@ -286,6 +296,7 @@ class SignalEngine:
         display_name = meta.get("name", symbol)
         category = meta.get("category", "other")
         mt_sym = meta.get("match_trader", symbol)
+        cleo_sym = meta.get("cleo_symbol", symbol.replace("-USD", "USDT"))
 
         # Bullish Breakout: Previous close below upper BB, current close cleanly breaking above
         if prev_close <= upper and current > upper:
@@ -309,7 +320,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=max(1.5, rr),
                 reasoning=f"Volatility Breakout: Clean close above upper BB ({upper:.2f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         # Bearish Breakdown: Previous close above lower BB, current close cleanly breaking below
@@ -334,7 +346,8 @@ class SignalEngine:
                 take_profit_2=round(tp2, 5),
                 risk_reward=max(1.5, rr),
                 reasoning=f"Volatility Breakdown: Clean close below lower BB ({lower:.2f})",
-                match_trader_symbol=mt_sym
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
             )
 
         return None
@@ -358,6 +371,7 @@ class SignalEngine:
         display_name = meta.get("name", symbol)
         category = meta.get("category", "other")
         mt_sym = meta.get("match_trader", symbol)
+        cleo_sym = meta.get("cleo_symbol", symbol.replace("-USD", "USDT"))
 
         is_bullish = current >= sma_20
         direction = "LONG" if is_bullish else "SHORT"
@@ -389,7 +403,8 @@ class SignalEngine:
             take_profit_2=round(tp2, 5),
             risk_reward=max(1.5, rr),
             reasoning=f"Baseline: Price {'above' if is_bullish else 'below'} 20-day SMA, RSI={rsi_val:.1f}",
-            match_trader_symbol=mt_sym
+            match_trader_symbol=mt_sym,
+            cleo_symbol=cleo_sym
         )
 
     def score_symbol(self, symbol: str, prices: List[float]) -> Optional[TradeSetup]:

@@ -14,8 +14,51 @@ SCAN_REFRESH_INTERVAL_SECONDS = int(os.getenv("REFRESH_INTERVAL", "60"))
 CACHE_QUOTES_TTL_SECONDS = 45
 CACHE_HISTORICAL_TTL_SECONDS = 180
 
-# Funding Pips & Match-Trader Risk Rules ($5,000 Account)
+# Prop Firms Configuration (Funding Pips & Hyro Trader)
+PROP_FIRMS = {
+    "funding_pips": {
+        "id": "funding_pips",
+        "name": "Funding Pips",
+        "display_name": "Funding Pips (Match-Trader)",
+        "platform": "Match-Trader",
+        "currency": "USD",
+        "currency_symbol": "$",
+        "instrument_focus": "Multi-Asset (Forex, Crypto, Commodities, Indices, Stocks)",
+        "challenge_type": "2-Step Flex / 1-Step Evaluation",
+        "tiers": [5000, 10000, 25000, 50000, 100000, 200000],
+        "default_tier": 5000,
+        "daily_drawdown_pct": 5.0,
+        "total_drawdown_pct": 10.0,
+        "risk_per_trade_min_pct": 1.0,
+        "risk_per_trade_max_pct": 2.0,
+        "max_correlated_positions": 3,
+        "enforce_stop_loss": True,
+        "description": "Multi-asset CFD challenge evaluated via Match-Trader platform"
+    },
+    "hyro_trader": {
+        "id": "hyro_trader",
+        "name": "Hyro Trader",
+        "display_name": "Hyro Trader (Cleo.finance)",
+        "platform": "Cleo.finance (Bybit)",
+        "currency": "USDT",
+        "currency_symbol": "$",
+        "instrument_focus": "Crypto Perpetual Futures (USDT-Margined)",
+        "challenge_type": "Crypto Futures Evaluation",
+        "tiers": [5000, 10000, 25000, 50000, 100000, 200000],
+        "default_tier": 200000,
+        "daily_drawdown_pct": 5.0,
+        "total_drawdown_pct": 10.0,
+        "risk_per_trade_min_pct": 1.0,
+        "risk_per_trade_max_pct": 2.0,
+        "max_correlated_positions": 3,
+        "enforce_stop_loss": True,
+        "description": "Crypto futures challenge executed via Cleo.finance connected to Bybit"
+    }
+}
+
+# Legacy default settings for backward compatibility
 ACCOUNT_SIZE = float(os.getenv("ACCOUNT_SIZE", "5000.0"))
+DEFAULT_PROP_FIRM = os.getenv("PROP_FIRM", "funding_pips")
 RISK_PER_TRADE_MIN_PCT = 1.0      # 1% = $50.00
 RISK_PER_TRADE_MAX_PCT = 2.0      # 2% = $100.00
 MAX_DAILY_DRAWDOWN_PCT = 5.0      # 5% = $250.00 hard stop
@@ -56,7 +99,7 @@ ALL_WATCHED_SYMBOLS = (
     WATCHLIST_STOCKS
 )
 
-# Detailed Asset Metadata & Match-Trader / Funding Pips Cross-Reference
+# Detailed Asset Metadata & Match-Trader / Funding Pips / Cleo.finance Cross-Reference
 ASSET_METADATA = {
     # Crypto (24/7)
     "BTC-USD": {
@@ -64,6 +107,7 @@ ASSET_METADATA = {
         "short_name": "BTC",
         "category": "crypto",
         "match_trader": "BTCUSD",
+        "cleo_symbol": "BTCUSDT",
         "coinbase": "BTC-USD",
         "pip_size": 1.0,
         "is_24_7": True
@@ -73,6 +117,7 @@ ASSET_METADATA = {
         "short_name": "ETH",
         "category": "crypto",
         "match_trader": "ETHUSD",
+        "cleo_symbol": "ETHUSDT",
         "coinbase": "ETH-USD",
         "pip_size": 0.1,
         "is_24_7": True
@@ -82,6 +127,7 @@ ASSET_METADATA = {
         "short_name": "SOL",
         "category": "crypto",
         "match_trader": "SOLUSD",
+        "cleo_symbol": "SOLUSDT",
         "coinbase": "SOL-USD",
         "pip_size": 0.01,
         "is_24_7": True
@@ -91,6 +137,7 @@ ASSET_METADATA = {
         "short_name": "XRP",
         "category": "crypto",
         "match_trader": "XRPUSD",
+        "cleo_symbol": "XRPUSDT",
         "coinbase": "XRP-USD",
         "pip_size": 0.0001,
         "is_24_7": True
@@ -100,6 +147,7 @@ ASSET_METADATA = {
         "short_name": "ADA",
         "category": "crypto",
         "match_trader": "ADAUSD",
+        "cleo_symbol": "ADAUSDT",
         "coinbase": "ADA-USD",
         "pip_size": 0.0001,
         "is_24_7": True
@@ -109,6 +157,7 @@ ASSET_METADATA = {
         "short_name": "DOGE",
         "category": "crypto",
         "match_trader": "DOGEUSD",
+        "cleo_symbol": "DOGEUSDT",
         "coinbase": "DOGE-USD",
         "pip_size": 0.00001,
         "is_24_7": True
@@ -118,6 +167,7 @@ ASSET_METADATA = {
         "short_name": "AVAX",
         "category": "crypto",
         "match_trader": "AVAXUSD",
+        "cleo_symbol": "AVAXUSDT",
         "coinbase": "AVAX-USD",
         "pip_size": 0.01,
         "is_24_7": True
@@ -127,6 +177,7 @@ ASSET_METADATA = {
         "short_name": "LINK",
         "category": "crypto",
         "match_trader": "LINKUSD",
+        "cleo_symbol": "LINKUSDT",
         "coinbase": "LINK-USD",
         "pip_size": 0.01,
         "is_24_7": True
@@ -136,6 +187,7 @@ ASSET_METADATA = {
         "short_name": "DOT",
         "category": "crypto",
         "match_trader": "DOTUSD",
+        "cleo_symbol": "DOTUSDT",
         "coinbase": "DOT-USD",
         "pip_size": 0.01,
         "is_24_7": True
@@ -145,6 +197,7 @@ ASSET_METADATA = {
         "short_name": "NEAR",
         "category": "crypto",
         "match_trader": "NEARUSD",
+        "cleo_symbol": "NEARUSDT",
         "coinbase": "NEAR-USD",
         "pip_size": 0.001,
         "is_24_7": True
@@ -154,6 +207,7 @@ ASSET_METADATA = {
         "short_name": "LTC",
         "category": "crypto",
         "match_trader": "LTCUSD",
+        "cleo_symbol": "LTCUSDT",
         "coinbase": "LTC-USD",
         "pip_size": 0.01,
         "is_24_7": True
@@ -163,6 +217,7 @@ ASSET_METADATA = {
         "short_name": "BNB",
         "category": "crypto",
         "match_trader": "BNBUSD",
+        "cleo_symbol": "BNBUSDT",
         "coinbase": "BNB-USD",
         "pip_size": 0.1,
         "is_24_7": True

@@ -2,7 +2,15 @@
 app.py
 
 Flask Web Application & API for QuantumTrader Online Multi-Asset Dashboard.
-Deployable to Render.com with Gunicorn, and runnable locally on port 5000.
+Deployable to Render.com with Gunicorn, and runnable locally on port 5000/5001.
+
+Features:
+- Instant pre-warmed cache (0ms latency, zero chance of blank signals table on startup)
+- Dynamic multi-prop firm support:
+  * Funding Pips (Match-Trader): $5K, $10K, $25K, $50K, $100K, $200K
+  * Hyro Trader (Cleo.finance Bybit Futures): 5K, 10K, 25K, 50K, 100K, 200K USDT
+- Live background market scanner with resilient error handling
+- Interactive position sizing & risk management endpoints
 """
 import os
 import sys
@@ -35,13 +43,20 @@ analyzer = TechnicalAnalyzer()
 signal_engine = SignalEngine(analyzer=analyzer)
 risk_manager = RiskManager()
 
+# Pre-warm signals immediately at startup so cache is NEVER empty on first request
+logger.info("Pre-warming signal cache from market engine baseline...")
+init_data = data_engine.fetch_all_markets()
+init_setups = signal_engine.scan_all_symbols(init_data, limit=40)
+init_signals = [s.to_dict() for s in init_setups]
+logger.info(f"Pre-warmed {len(init_signals)} live signals ready for instant serving.")
+
 # Thread-safe in-memory cache
 state_lock = threading.Lock()
 app_state: Dict[str, Any] = {
-    "signals": [],
-    "last_updated": None,
+    "signals": init_signals,
+    "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     "is_updating": False,
-    "update_count": 0,
+    "update_count": 1,
     "risk_summary": risk_manager.get_challenge_summary()
 }
 
@@ -55,7 +70,6 @@ def background_data_updater():
     logger.info("Background market scanner thread started.")
     interval = config.SCAN_REFRESH_INTERVAL_SECONDS
 
-    # Initial scan on startup
     while True:
         with state_lock:
             app_state["is_updating"] = True
@@ -68,7 +82,8 @@ def background_data_updater():
             signals_list = [s.to_dict() for s in setups]
 
             with state_lock:
-                app_state["signals"] = signals_list
+                if signals_list:
+                    app_state["signals"] = signals_list
                 app_state["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 app_state["update_count"] += 1
                 app_state["risk_summary"] = risk_manager.get_challenge_summary()
@@ -98,7 +113,11 @@ def index():
 def get_signals():
     """
     API endpoint returning live trade signals and risk metrics.
-    Supports ?top=10 or ?top=30, and ?category=crypto|forex|commodities|indices|stocks.
+    Supports:
+      ?top=10|30
+      ?category=all|crypto|forex|commodities|indices|stocks
+      ?firm=funding_pips|hyro_trader
+      ?capital=5000|10000|25000|50000|100000|200000
     """
     top_param = request.args.get("top", default="30")
     try:
@@ -109,20 +128,31 @@ def get_signals():
         limit = 30
 
     category_filter = request.args.get("category", default="all").lower()
+    firm_param = request.args.get("firm", default="funding_pips").lower()
+    capital_param = request.args.get("capital")
 
-    # If initial scan is in progress and cache is empty, wait up to 3 seconds
-    if not app_state["signals"] and app_state["is_updating"]:
-        for _ in range(15):
-            time.sleep(0.2)
-            if app_state["signals"]:
-                break
+    capital = None
+    if capital_param:
+        try:
+            val = float(capital_param)
+            if val > 0:
+                capital = val
+        except ValueError:
+            pass
 
     with state_lock:
         all_signals = list(app_state["signals"])
         last_updated = app_state["last_updated"]
         is_updating = app_state["is_updating"]
-        risk_summary = app_state["risk_summary"]
         update_count = app_state["update_count"]
+
+    # If signals is somehow empty, generate immediately from current data engine
+    if not all_signals:
+        mk_data = data_engine.fetch_all_markets()
+        quick_setups = signal_engine.scan_all_symbols(mk_data, limit=40)
+        all_signals = [s.to_dict() for s in quick_setups]
+        with state_lock:
+            app_state["signals"] = all_signals
 
     # Filter by category if requested
     if category_filter and category_filter != "all":
@@ -133,7 +163,7 @@ def get_signals():
     # Apply top limit (10 or 30)
     top_signals = filtered[:limit]
 
-    # Category statistics
+    # Category statistics across all available signals
     cat_counts = {
         "all": len(all_signals),
         "crypto": len([s for s in all_signals if s.get("category") == "crypto"]),
@@ -143,36 +173,69 @@ def get_signals():
         "stocks": len([s for s in all_signals if s.get("category") == "stocks"]),
     }
 
+    # Dynamic risk summary based on selected firm and capital
+    risk_summary = risk_manager.get_challenge_summary(firm=firm_param, account_size=capital)
+
     return jsonify({
         "status": "success",
         "total_signals": len(top_signals),
         "limit": limit,
         "category": category_filter,
+        "firm": firm_param,
+        "capital": capital or risk_summary["account_size"],
         "last_updated": last_updated,
         "is_updating": is_updating,
         "update_count": update_count,
         "signals": top_signals,
         "risk_summary": risk_summary,
-        "category_counts": cat_counts
+        "category_counts": cat_counts,
+        "firms_config": config.PROP_FIRMS
+    })
+
+
+@app.route("/api/risk_summary", methods=["GET"])
+def get_risk_summary():
+    """Dynamic risk parameters for a specific firm and capital tier."""
+    firm_param = request.args.get("firm", default="funding_pips").lower()
+    capital_param = request.args.get("capital")
+    capital = None
+    if capital_param:
+        try:
+            val = float(capital_param)
+            if val > 0:
+                capital = val
+        except ValueError:
+            pass
+
+    summary = risk_manager.get_challenge_summary(firm=firm_param, account_size=capital)
+    return jsonify({
+        "status": "success",
+        "risk_summary": summary,
+        "firms_config": config.PROP_FIRMS
     })
 
 
 @app.route("/api/calculate_lot", methods=["POST"])
 def calculate_lot():
-    """Calculates position sizing and lot size for Match-Trader based on Funding Pips rules."""
+    """
+    Calculates position sizing for Match-Trader (Funding Pips) or
+    Cleo.finance Bybit Futures (Hyro Trader).
+    """
     req_data = request.get_json(silent=True) or {}
     symbol = req_data.get("symbol", "BTC-USD")
     entry = float(req_data.get("entry", 0))
     stop_loss = float(req_data.get("stop_loss", 0))
     risk_pct = float(req_data.get("risk_pct", 1.0))
-    account_size = float(req_data.get("account_size", config.ACCOUNT_SIZE))
+    account_size = float(req_data.get("account_size", 5000.0))
+    firm = req_data.get("firm", "funding_pips").lower()
 
     result = risk_manager.calculate_lot_size(
         symbol=symbol,
         entry=entry,
         stop_loss=stop_loss,
         risk_pct=risk_pct,
-        account_size=account_size
+        account_size=account_size,
+        firm=firm
     )
     return jsonify(result)
 
@@ -218,7 +281,7 @@ if __name__ == "__main__":
     threading.Thread(target=_open_browser, daemon=True).start()
 
     logger.info("=" * 65)
-    logger.info("  QUANTUM TRADER WEB DASHBOARD — STANDALONE SERVER")
+    logger.info("  QUANTUM TRADER WEB DASHBOARD — MULTI-FIRM INTELLIGENCE")
     logger.info(f"  Local Access:   http://127.0.0.1:{port}")
     logger.info(f"  Network/Mobile: http://0.0.0.0:{port}")
     if port != 5000:
