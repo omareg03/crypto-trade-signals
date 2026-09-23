@@ -77,16 +77,16 @@ class ConsoleTradingDashboard(TradingDashboard):
             border_style="green",
             title_style="bold green"
         )
-        table.add_column("#", style="dim", width=3, justify="right")
-        table.add_column("Symbol", style="bold white", width=14, no_wrap=True)
-        table.add_column("Direction", justify="center", width=8, no_wrap=True)
-        table.add_column("Strategy", width=15, no_wrap=True)
-        table.add_column("Confidence", justify="right", width=10, no_wrap=True)
-        table.add_column("Entry", justify="right", width=10, no_wrap=True)
-        table.add_column("Stop", justify="right", width=10, no_wrap=True)
-        table.add_column("TP1", justify="right", width=10, no_wrap=True)
-        table.add_column("R:R", justify="right", width=4, no_wrap=True)
-        table.add_column("Reasoning", no_wrap=False)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Symbol", style="bold white", min_width=16)
+        table.add_column("Direction", min_width=8)
+        table.add_column("Strategy", min_width=16)
+        table.add_column("Confidence", justify="right", min_width=10)
+        table.add_column("Entry", justify="right", min_width=12)
+        table.add_column("Stop", justify="right", min_width=12)
+        table.add_column("TP1", justify="right", min_width=12)
+        table.add_column("R:R", justify="right", min_width=6)
+        table.add_column("Reasoning", min_width=32)
 
         for i, sig in enumerate(signals[:limit], 1):
             display_name = sig.display_name or SYMBOL_NAMES.get(sig.symbol, sig.symbol.upper())
@@ -183,8 +183,25 @@ if __name__ == "__main__":
     parser.add_argument("--top", type=int, choices=[10, 30], default=30, help="Display Top 10 or Top 30 setups (default: 30)")
     parser.add_argument("--interval", type=int, default=60, help="Refresh interval in seconds (default: 60)")
     parser.add_argument("--once", action="store_true", help="Run scan once and exit")
-    parser.add_argument("--firm", choices=["funding_pips", "hyro_trader"], default="funding_pips", help="Prop firm rules (default: funding_pips)")
+    parser.add_argument("--firm", choices=["funding_pips", "hyro_trader"], default=None, help="Prop firm rules")
     parser.add_argument("--capital", type=float, default=None, help="Challenge account capital (e.g. 5000, 10000, 25000, 50000, 100000, 200000)")
     args = parser.parse_args()
 
-    run_scanner(limit=args.top, interval=args.interval, once=args.once, firm=args.firm, capital=args.capital)
+    firm = args.firm
+    capital = args.capital
+
+    if not firm:
+        from rich.console import Console
+        from rich.prompt import Prompt
+        console = Console()
+        console.print("\n[bold cyan]=== QUANTUMTRADER CONFIGURATION ===[/bold cyan]")
+        choice = Prompt.ask("[bold white]Select Prop Firm (1: Funding Pips, 2: Hyro Trader)[/bold white]", choices=["1", "2"], default="1")
+        firm = "funding_pips" if choice == "1" else "hyro_trader"
+
+    if not capital:
+        from rich.prompt import IntPrompt
+        firm_name = "Funding Pips" if firm == "funding_pips" else "Hyro Trader"
+        default_cap = 5000 if firm == "funding_pips" else 200000
+        capital = IntPrompt.ask(f"[bold white]Enter Challenge Capital for {firm_name} (5000, 10000, 25000, 50000, 100000, 200000)[/bold white]", choices=["5000", "10000", "25000", "50000", "100000", "200000"], default=default_cap)
+
+    run_scanner(limit=args.top, interval=args.interval, once=args.once, firm=firm, capital=capital)
