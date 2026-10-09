@@ -64,20 +64,35 @@ MIN_TRADING_DAYS_ONE_STEP = 5   # need 5 qualifying days
 BLACKLISTED_BASES = {"NEAR", "LINK"}  # block these coins specifically
 BLACKLISTED_STANDALONE = {"USDT"}  # only block if symbol IS exactly "USDT", not "BTCUSDT"
 
-# Symbols to scan on Hyro (crypto only — Hyro is a crypto prop firm)
-# Expanded list: covers all major + mid-cap USDT perps on Bybit
-# The bot will dynamically skip any that return no klines (unavailable on simulator)
+# Symbols to scan on Hyro (crypto only — HyroTrader is a crypto prop firm)
+# This is the SEED list — the bot also dynamically discovers available symbols
+# by trying to fetch klines for each. If klines come back empty, the symbol
+# is skipped silently. New symbols can be added here and they'll auto-scan.
 HYRO_CRYPTO_SYMBOLS = [
-    # majors
+    # majors (high liquidity — always available)
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT",
     "DOGEUSDT", "AVAXUSDT", "LTCUSDT", "BNBUSDT", "DOTUSDT",
-    # mid-caps confirmed working
+    # mid-caps (confirmed working on Hyro simulator Oct 8, 2026)
     "ARBUSDT", "INJUSDT", "SUIUSDT", "APTUSDT",
-    # more Bybit perps to try (auto-skipped if unavailable)
+    # more Bybit perps — auto-skipped if unavailable on simulator
     "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FILUSDT", "ATOMUSDT",
     "AAVEUSDT", "UNIUSDT", "FTMUSDT", "ALGOUSDT", "RNDRUSDT",
     "GALAUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "EOSUSDT",
-    "FLOWUSDT", "NEARUSDT", "LINKUSDT",  # last two are blacklisted by GEMINI.md but listed for discovery
+    "FLOWUSDT", "SEIUSDT", "TIAUSDT", "JUPUSDT", "PYTHUSDT",
+    "STRTKUSDT", "ENAUSDT", "JTOUSDT", "POLUSDT", "MEMESUSDT",
+    # blacklisted but listed for discovery (GEMINI.md rules will reject)
+    "NEARUSDT", "LINKUSDT",
+]
+
+# Additional discovery symbols — these are tried but may not be available
+# The bot will silently skip any that return no klines
+DISCOVERY_SYMBOLS = [
+    "1000SOLUSDT", "1000XECUSDT", "1000FLOKIUSDT", "1000PEPEUSDT",
+    "1000SHIBUSDT", "1000BONKUSDT", "1000TURBOUSDT", "1000RATSUSDT",
+    "BLURUSDT", "DYDXUSDT", "GMXUSDT", "CRVUSDT", "LDOUSDT",
+    "SHIBUSDT", "TRXUSDT", "ETCUSDT", "BCHUSDT", "ICPUSDT",
+    "HBARUSDT", "VETUSDT", "THETAUSDT", "XLMUSDT", "QNTUSDT",
+    "KASUSDT", "ORDIUSDT", "WLDUSDT", "JTOUSDT", "CETUSDT",
 ]
 
 # Symbols already in active trades (skip if already positioned)
@@ -610,17 +625,21 @@ class HyroBridge:
         # Manage existing positions (trailing stops, breakeven moves)
         await self._manage_existing_positions(ch_id, stage_id)
 
-        # Step 4: Scan for signals on each crypto symbol
+        # Step 4: Scan for signals across ALL symbols — rank and pick the BEST
         max_risk_pct = GeminiRules.get_max_risk_pct(account_type)
         risk_usd = balance * (max_risk_pct / 100.0)
 
-        for symbol in HYRO_CRYPTO_SYMBOLS:
+        # Collect ALL valid signals across all symbols, then rank them
+        all_valid_signals = []
+
+        all_symbols = HYRO_CRYPTO_SYMBOLS + DISCOVERY_SYMBOLS
+        for symbol in all_symbols:
             if symbol in existing_symbols:
                 log.info("  Skipping %s — already have open position", symbol)
                 continue
 
             # Rate-limit delay between symbols
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.8)
 
             # Get klines from the simulator
             try:
@@ -630,10 +649,9 @@ class HyroBridge:
                 continue
 
             if not klines or len(klines) < 35:
-                log.debug("  Insufficient klines for %s (%d rows)", symbol, len(klines) if klines else 0)
-                continue
+                continue  # symbol not available or not enough data — skip silently
 
-            # Extract close prices from klines: [timestamp, o, h, l, c, v, turnover]
+            # Extract close prices from klines
             prices = []
             for k in klines:
                 if isinstance(k, (list, tuple)) and len(k) >= 5:
@@ -642,52 +660,45 @@ class HyroBridge:
                     prices.append(float(k.get("close", k.get("c", 0))))
 
             if len(prices) < 35:
-                log.debug("  Not enough close prices for %s (%d)", symbol, len(prices))
                 continue
 
-            # Run signal engine on historical closes
+            # Run signal engine
             setup = self.engine.score_symbol(f"{symbol}-USD", prices)
-            if not setup:
+            if not setup or setup.confidence < MIN_CONFIDENCE:
                 continue
 
-            if setup.confidence < MIN_CONFIDENCE:
-                log.debug("  %s: confidence %d%% < %d%% — skipping", symbol, setup.confidence, MIN_CONFIDENCE)
+            # Blacklist check
+            blocked, reason = GeminiRules.is_blacklisted(symbol)
+            if blocked:
+                log.info("  %s %s REJECTED: %s", symbol, setup.direction, reason)
                 continue
 
-            # Get LIVE ticker price (not the last candle close) for accurate entry/SL/TP
-            live_price = prices[-1]  # fallback to last candle close
+            # Get live ticker price
+            live_price = prices[-1]
             try:
                 ticker = await self.client.get_tickers(ch_id, symbol)
                 if isinstance(ticker, dict):
-                    # Try to extract last price from ticker response
                     for key in ("lastPrice", "last", "price", "close"):
                         val = ticker.get(key)
                         if val:
                             live_price = float(val)
                             break
-                    # Bybit format: {"list": [{"lastPrice": "81746.5", ...}]}
                     if "list" in ticker and isinstance(ticker["list"], list) and ticker["list"]:
                         live_price = float(ticker["list"][0].get("lastPrice") or ticker["list"][0].get("last") or live_price)
             except Exception as e:
-                log.debug("  Could not get live ticker for %s: %s — using last candle close", symbol, e)
+                pass  # use last candle close as fallback
 
-            # Recalculate entry/SL/TP from the LIVE price using ATR-based volatility
-            # ATR proxy: use recent candle range as volatility measure
+            # ATR-based SL/TP
             recent_candles = klines[-14:] if len(klines) >= 14 else klines[-10:]
             ranges = []
             for k in recent_candles:
                 if isinstance(k, (list, tuple)) and len(k) >= 5:
-                    ranges.append(float(k[2]) - float(k[3]))  # high - low
+                    ranges.append(float(k[2]) - float(k[3]))
                 elif isinstance(k, dict):
                     ranges.append(float(k.get("high", k.get("h", 0))) - float(k.get("low", k.get("l", 0))))
             atr_proxy = sum(ranges) / len(ranges) if ranges else live_price * 0.025
-
-            # ATR-based SL: 1.5x ATR (tighter in calm, wider in volatile)
-            # Clamp between 1.5% and 5% to stay within prop firm drawdown limits
             sl_distance = atr_proxy * 1.5
             sl_pct = max(0.015, min(0.05, sl_distance / live_price))
-
-            # TP at 2.6x ATR → ensures R:R >= 1.5 (since SL is 1.5x ATR)
             tp_distance = atr_proxy * 2.6
             tp_pct = max(sl_pct * 1.6, tp_distance / live_price)
 
@@ -695,142 +706,194 @@ class HyroBridge:
                 entry = live_price
                 sl = live_price * (1 - sl_pct)
                 tp = live_price * (1 + tp_pct)
-            else:  # SHORT
+            else:
                 entry = live_price
                 sl = live_price * (1 + sl_pct)
                 tp = live_price * (1 - tp_pct)
 
             rr = abs(tp - entry) / abs(entry - sl)
 
-            # Log volatility info
-            log.info("  %s | ATR proxy: %.4f (%.2f%%) | SL: %.2f%% | TP: %.2f%% | R:R 1:%.2f",
-                     symbol, atr_proxy, (atr_proxy/live_price)*100, sl_pct*100, tp_pct*100, rr)
-
-            # Validate against GEMINI.md rules with the recalculated R:R
-            account_label = "funded" if is_funded else "challenge"
-            passes, reasons, signal_risk = GeminiRules.validate_signal(setup, account_label, balance)
-
-            if not passes:
-                log.info("  %s %s REJECTED: %s", symbol, setup.direction, "; ".join(reasons))
+            # R:R check — reject if below 1.5
+            if rr < MIN_RR:
+                log.info("  %s %s REJECTED: R:R %.2f < %.1f minimum", symbol, setup.direction, rr, MIN_RR)
                 continue
 
-            # Log the signal
-            log.info("  ✅ SIGNAL: %s %s | %s | R:R 1:%.2f | Conf %d%% | Live %.6f | Entry %.6f | SL %.6f | TP %.6f",
+            # Calculate a composite score for ranking
+            # Score = confidence * 0.5 + rr * 30 + volume_factor * 20
+            # Higher confidence + higher R:R = better signal
+            score = (setup.confidence * 0.5) + (rr * 30) + (20 if setup.strategy == "Momentum" else 10)
+
+            all_valid_signals.append({
+                "symbol": symbol,
+                "direction": setup.direction,
+                "strategy": setup.strategy,
+                "confidence": setup.confidence,
+                "rr": rr,
+                "entry": entry,
+                "sl": sl,
+                "tp": tp,
+                "live_price": live_price,
+                "atr_pct": (atr_proxy / live_price) * 100,
+                "sl_pct": sl_pct * 100,
+                "tp_pct": tp_pct * 100,
+                "score": score,
+                "klines": klines,
+            })
+
+            log.info("  📡 %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | ATR %.2f%% | SL %.2f%% TP %.2f%%",
                      symbol, setup.direction, setup.strategy,
-                     rr, setup.confidence,
-                     live_price, entry, sl, tp)
+                     setup.confidence, rr, score, (atr_proxy/live_price)*100, sl_pct*100, tp_pct*100)
 
-            # Calculate position size from risk using the recalculated entry/SL
-            risk_per_unit = abs(entry - sl)
-            if risk_per_unit <= 0:
-                log.warning("  %s: zero risk per unit — skipping", symbol)
-                continue
+        # Step 5: Rank signals by score and pick the BEST one for this account
+        if not all_valid_signals:
+            log.info("  No valid signals found across %d symbols for this account", len(all_symbols))
+            return
 
-            qty_raw = risk_usd / risk_per_unit
+        # Sort by score descending — best signal first
+        all_valid_signals.sort(key=lambda s: s["score"], reverse=True)
 
-            # Round qty to Bybit qty step (varies by symbol)
-            # Common Bybit qty steps: BTC=0.001, ETH=0.01, SOL=0.1, ADA=1, DOGE=10, etc.
-            qty_steps = {
-                "BTCUSDT": 0.001, "ETHUSDT": 0.01, "SOLUSDT": 0.1, "XRPUSDT": 1,
-                "ADAUSDT": 1, "DOGEUSDT": 10, "AVAXUSDT": 0.1, "LTCUSDT": 0.01,
-                "BNBUSDT": 0.01, "DOTUSDT": 0.1, "ARBUSDT": 0.1, "INJUSDT": 0.1,
-                "SUIUSDT": 0.1, "APTUSDT": 0.1, "PEPEUSDT": 100, "WIFUSDT": 1,
-                "BONKUSDT": 100, "FILUSDT": 0.1, "ATOMUSDT": 0.1, "AAVEUSDT": 0.01,
-                "UNIUSDT": 0.01, "FTMUSDT": 1, "ALGOUSDT": 1, "RNDRUSDT": 0.1,
-                "GALAUSDT": 1, "SANDUSDT": 1, "MANAUSDT": 1, "AXSUSDT": 0.1,
-                "EOSUSDT": 1, "FLOWUSDT": 1, "NEARUSDT": 0.1, "LINKUSDT": 0.1,
-            }
-            step = qty_steps.get(symbol, 0.01)
-            qty = round(qty_raw / step) * step
-            if qty < step:
-                qty = step  # minimum 1 step
+        # Log the ranking
+        log.info("  🏆 SIGNAL RANKING (top 5):")
+        for i, sig in enumerate(all_valid_signals[:5]):
+            marker = "⭐" if i == 0 else "  "
+            log.info("     %s #%d: %s %s | Conf %d%% | R:R 1:%.2f | Score %.1f",
+                     marker, i+1, sig["symbol"], sig["direction"],
+                     sig["confidence"], sig["rr"], sig["score"])
 
-            # Round prices to tick size (common: 0.1 for BTC, 0.01 for most alts)
-            tick_steps = {
-                "BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.01, "XRPUSDT": 0.0001,
-                "ADAUSDT": 0.0001, "DOGEUSDT": 0.00001, "AVAXUSDT": 0.001,
-                "LTCUSDT": 0.01, "BNBUSDT": 0.01, "DOTUSDT": 0.001,
-                "ARBUSDT": 0.0001, "INJUSDT": 0.001, "SUIUSDT": 0.0001,
-                "APTUSDT": 0.001, "PEPEUSDT": 0.0000001, "WIFUSDT": 0.0001,
-                "BONKUSDT": 0.0000001, "FILUSDT": 0.01, "ATOMUSDT": 0.001,
-                "AAVEUSDT": 0.01, "UNIUSDT": 0.01, "FTMUSDT": 0.0001,
-                "ALGOUSDT": 0.0001, "RNDRUSDT": 0.001, "GALAUSDT": 0.0001,
-                "SANDUSDT": 0.0001, "MANAUSDT": 0.0001, "AXSUSDT": 0.001,
-                "EOSUSDT": 0.0001, "FLOWUSDT": 0.0001, "NEARUSDT": 0.001,
-                "LINKUSDT": 0.001,
-            }
-            tick = tick_steps.get(symbol, 0.01)
+        # Pick the best signal
+        best = all_valid_signals[0]
+        log.info("  ✅ BEST SIGNAL SELECTED: %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f",
+                 best["symbol"], best["direction"], best["strategy"],
+                 best["confidence"], best["rr"], best["score"])
 
-            # Format as strings with correct precision
-            def fmt_price(p):
-                p_rounded = round(p / tick) * tick
-                if tick >= 1:
-                    return f"{p_rounded:.0f}"
-                elif tick >= 0.1:
-                    return f"{p_rounded:.1f}"
-                elif tick >= 0.01:
-                    return f"{p_rounded:.2f}"
-                elif tick >= 0.001:
-                    return f"{p_rounded:.3f}"
-                elif tick >= 0.0001:
-                    return f"{p_rounded:.4f}"
-                else:
-                    return f"{p_rounded:.6f}"
+        # Step 6: Smart account routing — decide if this account should take this trade
+        # Logic: funded accounts are more conservative, challenge accounts can be aggressive
+        # If funded account: only take trades with confidence >= 65 and R:R >= 1.6
+        # If challenge account: take trades with confidence >= 60 and R:R >= 1.5
+        if is_funded:
+            if best["confidence"] < 65 or best["rr"] < 1.6:
+                log.info("  🛡️ FUNDED ACCOUNT — stricter filter: conf %.0f%% < 65 or R:R %.2f < 1.6 — skipping", best["confidence"], best["rr"])
+                return
+            log.info("  🛡️ FUNDED ACCOUNT — high-confidence signal approved (0.5%% risk)")
+        else:
+            log.info("  🚀 CHALLENGE ACCOUNT — signal approved (2%% risk)")
 
-            def fmt_qty(q):
-                if step >= 1:
-                    return f"{q:.0f}"
-                elif step >= 0.1:
-                    return f"{q:.1f}"
-                elif step >= 0.01:
-                    return f"{q:.2f}"
-                else:
-                    return f"{q:.3f}"
+        # Step 7: Calculate position size and place the order
+        symbol = best["symbol"]
+        entry = best["entry"]
+        sl = best["sl"]
+        tp = best["tp"]
+        rr = best["rr"]
 
-            qty_str = fmt_qty(qty)
-            entry_str = fmt_price(entry)
-            sl_str = fmt_price(sl)
-            tp_str = fmt_price(tp)
+        risk_per_unit = abs(entry - sl)
+        if risk_per_unit <= 0:
+            log.warning("  %s: zero risk per unit — skipping", symbol)
+            return
 
-            # Map direction
-            side = "Buy" if setup.direction == "LONG" else "Sell"
+        qty_raw = risk_usd / risk_per_unit
 
-            # Preview the order first
-            try:
-                preview = await self.client.preview_order(
-                    challenge_id=ch_id,
-                    symbol=symbol,
-                    side=side,
-                    order_type="Limit",
-                    qty=qty_str,
-                    price=entry_str,
-                    take_profit=tp_str,
-                    stop_loss=sl_str,
-                )
-                log.info("  Preview: %s", json.dumps(preview, indent=2)[:400])
-            except Exception as e:
-                log.warning("  Preview failed for %s: %s — will try to place anyway", symbol, e)
+        # Round qty to Bybit qty step (varies by symbol)
+        qty_steps = {
+            "BTCUSDT": 0.001, "ETHUSDT": 0.01, "SOLUSDT": 0.1, "XRPUSDT": 1,
+            "ADAUSDT": 1, "DOGEUSDT": 10, "AVAXUSDT": 0.1, "LTCUSDT": 0.01,
+            "BNBUSDT": 0.01, "DOTUSDT": 0.1, "ARBUSDT": 0.1, "INJUSDT": 0.1,
+            "SUIUSDT": 0.1, "APTUSDT": 0.1, "PEPEUSDT": 100, "WIFUSDT": 1,
+            "BONKUSDT": 100, "FILUSDT": 0.1, "ATOMUSDT": 0.1, "AAVEUSDT": 0.01,
+            "UNIUSDT": 0.01, "FTMUSDT": 1, "ALGOUSDT": 1, "RNDRUSDT": 0.1,
+            "GALAUSDT": 1, "SANDUSDT": 1, "MANAUSDT": 1, "AXSUSDT": 0.1,
+            "EOSUSDT": 1, "FLOWUSDT": 1, "NEARUSDT": 0.1, "LINKUSDT": 0.1,
+        }
+        step = qty_steps.get(symbol, 0.01)
+        qty = round(qty_raw / step) * step
+        if qty < step:
+            qty = step  # minimum 1 step
 
-            # Place the order
-            try:
-                result = await self.client.place_order(
-                    challenge_id=ch_id,
-                    symbol=symbol,
-                    side=side,
-                    order_type="Limit",
-                    qty=qty_str,
-                    price=entry_str,
-                    take_profit=tp_str,
-                    stop_loss=sl_str,
-                )
-                log.info("  🎯 ORDER PLACED: %s %s | qty %s @ %s | SL %s | TP %s",
-                         symbol, side, qty_str, entry_str, sl_str, tp_str)
-                log.info("  Result: %s", json.dumps(result, indent=2)[:500])
-            except Exception as e:
-                log.error("  ❌ Order failed for %s: %s", symbol, e)
+        # Round prices to tick size
+        tick_steps = {
+            "BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.01, "XRPUSDT": 0.0001,
+            "ADAUSDT": 0.0001, "DOGEUSDT": 0.00001, "AVAXUSDT": 0.001,
+            "LTCUSDT": 0.01, "BNBUSDT": 0.01, "DOTUSDT": 0.001,
+            "ARBUSDT": 0.0001, "INJUSDT": 0.001, "SUIUSDT": 0.0001,
+            "APTUSDT": 0.001, "PEPEUSDT": 0.0000001, "WIFUSDT": 0.0001,
+            "BONKUSDT": 0.0000001, "FILUSDT": 0.01, "ATOMUSDT": 0.001,
+            "AAVEUSDT": 0.01, "UNIUSDT": 0.01, "FTMUSDT": 0.0001,
+            "ALGOUSDT": 0.0001, "RNDRUSDT": 0.001, "GALAUSDT": 0.0001,
+            "SANDUSDT": 0.0001, "MANAUSDT": 0.0001, "AXSUSDT": 0.001,
+            "EOSUSDT": 0.0001, "FLOWUSDT": 0.0001, "NEARUSDT": 0.001,
+            "LINKUSDT": 0.001,
+        }
+        tick = tick_steps.get(symbol, 0.01)
 
-            # Only one new trade per challenge per cycle
-            break
+        def fmt_price(p):
+            p_rounded = round(p / tick) * tick
+            if tick >= 1:
+                return f"{p_rounded:.0f}"
+            elif tick >= 0.1:
+                return f"{p_rounded:.1f}"
+            elif tick >= 0.01:
+                return f"{p_rounded:.2f}"
+            elif tick >= 0.001:
+                return f"{p_rounded:.3f}"
+            elif tick >= 0.0001:
+                return f"{p_rounded:.4f}"
+            else:
+                return f"{p_rounded:.6f}"
+
+        def fmt_qty(q):
+            if step >= 1:
+                return f"{q:.0f}"
+            elif step >= 0.1:
+                return f"{q:.1f}"
+            elif step >= 0.01:
+                return f"{q:.2f}"
+            else:
+                return f"{q:.3f}"
+
+        qty_str = fmt_qty(qty)
+        entry_str = fmt_price(entry)
+        sl_str = fmt_price(sl)
+        tp_str = fmt_price(tp)
+
+        # Map direction
+        side = "Buy" if best["direction"] == "LONG" else "Sell"
+
+        log.info("  ✅ SIGNAL: %s %s | %s | R:R 1:%.2f | Conf %d%% | Entry %.6f | SL %.6f | TP %.6f | Qty %s",
+                 symbol, best["direction"], best["strategy"],
+                 rr, best["confidence"], entry, sl, tp, qty_str)
+
+        # Preview the order first
+        try:
+            preview = await self.client.preview_order(
+                challenge_id=ch_id,
+                symbol=symbol,
+                side=side,
+                order_type="Limit",
+                qty=qty_str,
+                price=entry_str,
+                take_profit=tp_str,
+                stop_loss=sl_str,
+            )
+            log.info("  Preview: %s", json.dumps(preview, indent=2)[:400])
+        except Exception as e:
+            log.warning("  Preview failed for %s: %s — will try to place anyway", symbol, e)
+
+        # Place the order
+        try:
+            result = await self.client.place_order(
+                challenge_id=ch_id,
+                symbol=symbol,
+                side=side,
+                order_type="Limit",
+                qty=qty_str,
+                price=entry_str,
+                take_profit=tp_str,
+                stop_loss=sl_str,
+            )
+            log.info("  🎯 ORDER PLACED: %s %s | qty %s @ %s | SL %s | TP %s",
+                     symbol, side, qty_str, entry_str, sl_str, tp_str)
+            log.info("  Result: %s", json.dumps(result, indent=2)[:500])
+        except Exception as e:
+            log.error("  ❌ Order failed for %s: %s", symbol, e)
 
     async def _manage_existing_positions(self, ch_id: str, stage_id: str):
         """Manage open positions: apply trailing stops, check TP/SL, log PnL."""
