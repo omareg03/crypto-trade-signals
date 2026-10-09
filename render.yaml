@@ -13,3 +13,17 @@ services:
         value: 60
       - key: ACCOUNT_SIZE
         value: 5000
+
+  - type: worker
+    name: hyro-bridge-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python hyro_bridge.py --loop
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.16
+      - key: SCAN_INTERVAL
+        value: 600
+      - key: HYRO_AGENT_TOKEN
+        sync: false
