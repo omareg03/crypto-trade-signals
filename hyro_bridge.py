@@ -431,8 +431,67 @@ class HyroBridge:
             except Exception as e:
                 log.error("Error processing challenge: %s", e, exc_info=True)
 
+        # Log performance summary after all challenges processed
+        await self._log_performance_summary()
+
         log.info("SCAN CYCLE COMPLETE — %s", datetime.now(timezone.utc).isoformat())
         log.info("=" * 70)
+
+    async def _log_performance_summary(self):
+        """Log a performance summary across all challenges."""
+        try:
+            challenges = await self.client.list_challenges()
+            if not challenges:
+                return
+
+            total_equity = 0.0
+            total_realized_pnl = 0.0
+            total_open_positions = 0
+            active_accounts = 0
+
+            for ch in challenges:
+                if not isinstance(ch, dict):
+                    continue
+                status = ch.get("status", "")
+                if status.lower() not in ("active", "ongoing", "in_progress"):
+                    continue
+
+                ch_id = ch.get("publicId") or ch.get("id", "")
+                if not ch_id:
+                    continue
+
+                active_accounts += 1
+
+                # Get metrics
+                details = await self.client.get_challenge(ch_id)
+                if isinstance(details, dict):
+                    stage = details.get("currentStage", {})
+                    if isinstance(stage, dict):
+                        stage_id = stage.get("publicId", "")
+                        if stage_id:
+                            metrics = await self.client.get_stage_metrics(stage_id)
+                            if isinstance(metrics, dict):
+                                eq_m = metrics.get("equityMetrics", {})
+                                if isinstance(eq_m, dict):
+                                    total_equity += float(eq_m.get("equity", 0))
+                                tm = metrics.get("tradeMetrics", {})
+                                if isinstance(tm, dict):
+                                    total_realized_pnl += float(tm.get("longRealizedPnl", 0)) + float(tm.get("shortRealizedPnl", 0))
+
+                # Count open positions
+                positions = await self.client.list_positions(ch_id)
+                if positions:
+                    total_open_positions += len(positions)
+
+            log.info("=" * 70)
+            log.info("  📊 PERFORMANCE SUMMARY")
+            log.info("  Active accounts: %d | Open positions: %d", active_accounts, total_open_positions)
+            log.info("  Total equity: $%.2f | Total realized P&L: $%.2f", total_equity, total_realized_pnl)
+            if total_realized_pnl != 0:
+                log.info("  Net return: %.2f%%", (total_realized_pnl / max(total_equity, 1)) * 100)
+            log.info("=" * 70)
+        except Exception as e:
+            log.debug("Performance summary error: %s", e)
 
     async def _process_challenge(self, challenge: dict):
         """Process a single challenge: check rules, scan signals, place trades."""
@@ -526,14 +585,20 @@ class HyroBridge:
             log.warning("Challenge %s: zero balance — skipping", ch_id)
             return
 
-        # Step 3: Check existing positions
+        # Step 3: Check existing positions and manage them (trailing stops, PnL logging)
         positions = await self.client.list_positions(ch_id)
         existing_symbols = set()
         if positions:
             for pos in positions:
-                sym = pos.get("symbol", "")
-                existing_symbols.add(sym)
-                log.info("  Open position: %s %s, PnL: %s", sym, pos.get("side"), pos.get("unrealizedPnl"))
+                if isinstance(pos, dict):
+                    sym = pos.get("symbol", "")
+                    if sym:
+                        existing_symbols.add(sym)
+                        pnl = pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", "N/A")))
+                        log.info("  Open position: %s %s | PnL: %s", sym, pos.get("side", ""), pnl)
+
+        # Manage existing positions (trailing stops, breakeven moves)
+        await self._manage_existing_positions(ch_id, stage_id)
 
         # Step 4: Scan for signals on each crypto symbol
         max_risk_pct = GeminiRules.get_max_risk_pct(account_type)
@@ -596,19 +661,40 @@ class HyroBridge:
             except Exception as e:
                 log.debug("  Could not get live ticker for %s: %s — using last candle close", symbol, e)
 
-            # Recalculate entry/SL/TP from the LIVE price, not the last candle close
-            # The signal gives us DIRECTION and STRATEGY — we re-price from live
+            # Recalculate entry/SL/TP from the LIVE price using ATR-based volatility
+            # ATR proxy: use recent candle range as volatility measure
+            recent_candles = klines[-14:] if len(klines) >= 14 else klines[-10:]
+            ranges = []
+            for k in recent_candles:
+                if isinstance(k, (list, tuple)) and len(k) >= 5:
+                    ranges.append(float(k[2]) - float(k[3]))  # high - low
+                elif isinstance(k, dict):
+                    ranges.append(float(k.get("high", k.get("h", 0))) - float(k.get("low", k.get("l", 0))))
+            atr_proxy = sum(ranges) / len(ranges) if ranges else live_price * 0.025
+
+            # ATR-based SL: 1.5x ATR (tighter in calm, wider in volatile)
+            # Clamp between 1.5% and 5% to stay within prop firm drawdown limits
+            sl_distance = atr_proxy * 1.5
+            sl_pct = max(0.015, min(0.05, sl_distance / live_price))
+
+            # TP at 2.6x ATR → ensures R:R >= 1.5 (since SL is 1.5x ATR)
+            tp_distance = atr_proxy * 2.6
+            tp_pct = max(sl_pct * 1.6, tp_distance / live_price)
+
             if setup.direction == "LONG":
-                # Momentum LONG: entry at current, SL 2.5% below, TP 4% above
                 entry = live_price
-                sl = live_price * 0.975   # 2.5% stop
-                tp = live_price * 1.04     # 4% target
-                rr = 1.6
+                sl = live_price * (1 - sl_pct)
+                tp = live_price * (1 + tp_pct)
             else:  # SHORT
                 entry = live_price
-                sl = live_price * 1.025    # 2.5% stop
-                tp = live_price * 0.96     # 4% target
-                rr = 1.6
+                sl = live_price * (1 + sl_pct)
+                tp = live_price * (1 - tp_pct)
+
+            rr = abs(tp - entry) / abs(entry - sl)
+
+            # Log volatility info
+            log.info("  %s | ATR proxy: %.4f (%.2f%%) | SL: %.2f%% | TP: %.2f%% | R:R 1:%.2f",
+                     symbol, atr_proxy, (atr_proxy/live_price)*100, sl_pct*100, tp_pct*100, rr)
 
             # Validate against GEMINI.md rules with the recalculated R:R
             account_label = "funded" if is_funded else "challenge"
@@ -722,6 +808,93 @@ class HyroBridge:
 
             # Only one new trade per challenge per cycle
             break
+
+    async def _manage_existing_positions(self, ch_id: str, stage_id: str):
+        """Manage open positions: apply trailing stops, check TP/SL, log PnL."""
+        try:
+            positions = await self.client.list_positions(ch_id)
+        except Exception as e:
+            log.debug("  Could not list positions for %s: %s", ch_id, e)
+            return
+
+        if not positions:
+            return
+
+        for pos in positions:
+            if not isinstance(pos, dict):
+                continue
+
+            symbol = pos.get("symbol", "")
+            side = pos.get("side", "")
+            entry_price = float(pos.get("entryPrice", pos.get("entry", 0)) or 0)
+            mark_price = float(pos.get("markPrice", pos.get("mark", 0)) or 0)
+            unrealized_pnl = float(pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", 0))) or 0)
+            qty = float(pos.get("size", pos.get("qty", 0)) or 0)
+            leverage = float(pos.get("leverage", 1) or 1)
+
+            if not symbol or entry_price <= 0:
+                continue
+
+            # Calculate how far price has moved in our favor
+            if side.lower() in ("buy", "long"):
+                move_pct = (mark_price - entry_price) / entry_price * 100
+            else:
+                move_pct = (entry_price - mark_price) / entry_price * 100
+
+            # Calculate risk in USD (entry to current SL if available)
+            current_sl = float(pos.get("stopLoss", pos.get("stop_loss", 0)) or 0)
+            current_tp = float(pos.get("takeProfit", pos.get("take_profit", 0)) or 0)
+            risk_per_unit = abs(entry_price - current_sl) if current_sl > 0 else 0
+            risk_usd = risk_per_unit * qty if risk_per_unit > 0 else 0
+
+            log.info("  📊 POSITION: %s %s | Entry %.6f | Mark %.6f | PnL $%.2f | Move %.2f%%",
+                     symbol, side, entry_price, mark_price, unrealized_pnl, move_pct)
+
+            # TRAILING STOP LOGIC:
+            # When position is up 1R (100% of initial risk), move SL to breakeven
+            # When position is up 2R, move SL to 1R profit
+            # When position is up 3R, move SL to 2R profit
+            if risk_usd > 0 and risk_per_unit > 0:
+                r_multiple = (unrealized_pnl / risk_usd) if risk_usd > 0 else 0
+
+                if r_multiple >= 1.0 and r_multiple < 2.0:
+                    # Move SL to breakeven
+                    if side.lower() in ("buy", "long"):
+                        new_sl = entry_price
+                    else:
+                        new_sl = entry_price
+
+                    # Only tighten if current SL is wider than breakeven
+                    if current_sl > 0:
+                        is_long = side.lower() in ("buy", "long")
+                        should_tighten = (is_long and new_sl > current_sl) or (not is_long and new_sl < current_sl)
+                        if should_tighten:
+                            log.info("  📌 TRAILING: %s — moving SL to breakeven (%.6f), locking in $0 risk", symbol, new_sl)
+                            try:
+                                sl_str = f"{new_sl:.6f}"
+                                await self.client.set_trading_stop(ch_id, symbol, stop_loss=sl_str)
+                                log.info("  ✅ Trailing stop updated for %s", symbol)
+                            except Exception as e:
+                                log.warning("  Could not set trailing stop for %s: %s", symbol, e)
+
+                elif r_multiple >= 2.0:
+                    # Move SL to 1R profit
+                    if side.lower() in ("buy", "long"):
+                        new_sl = entry_price + risk_per_unit
+                    else:
+                        new_sl = entry_price - risk_per_unit
+
+                    if current_sl > 0:
+                        is_long = side.lower() in ("buy", "long")
+                        should_tighten = (is_long and new_sl > current_sl) or (not is_long and new_sl < current_sl)
+                        if should_tighten:
+                            log.info("  📌 TRAILING: %s — moving SL to +1R (%.6f), locking in $%.2f profit", symbol, new_sl, risk_usd)
+                            try:
+                                sl_str = f"{new_sl:.6f}"
+                                await self.client.set_trading_stop(ch_id, symbol, stop_loss=sl_str)
+                                log.info("  ✅ Trailing stop updated for %s", symbol)
+                            except Exception as e:
+                                log.warning("  Could not set trailing stop for %s: %s", symbol, e)
 
 
 # ─── Main Entry Point ──────────────────────────────────────────────────────────
