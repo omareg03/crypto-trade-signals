@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QuantumTrader Bot Dashboard</title>
+    <style>
+        :root {
+            --bg: #0a0e17;
+            --card: #131825;
+            --border: #1e2738;
+            --accent: #6366f1;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #eab308;
+            --muted: #6b7280;
+            --text: #e5e7eb;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        h1 { font-size: 28px; font-weight: 700; margin-bottom: 4px; }
+        .subtitle { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+        .grid { display: grid; gap: 16px; }
+        .grid-4 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+        .grid-2 { grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .stat-card { text-align: center; }
+        .stat-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+        .stat-value { font-size: 28px; font-weight: 700; }
+        .stat-value.green { color: var(--green); }
+        .stat-value.red { color: var(--red); }
+        .stat-value.yellow { color: var(--yellow); }
+        .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+        td { padding: 12px; border-bottom: 1px solid rgba(30,39,56,0.5); }
+        tr:hover { background: rgba(99,102,241,0.05); }
+        .badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge-long { background: rgba(34,197,94,0.15); color: var(--green); }
+        .badge-short { background: rgba(239,68,68,0.15); color: var(--red); }
+        .badge-active { background: rgba(99,102,241,0.15); color: var(--accent); }
+        .badge-funded { background: rgba(234,179,8,0.15); color: var(--yellow); }
+        .badge-eval { background: rgba(107,114,128,0.15); color: var(--muted); }
+        .pnl-positive { color: var(--green); font-weight: 600; }
+        .pnl-negative { color: var(--red); font-weight: 600; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .refresh-btn {
+            background: var(--accent); color: white; border: none; padding: 8px 20px;
+            border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .refresh-btn:hover { opacity: 0.85; }
+        .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .live-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); margin-right: 6px; animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+        .section-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .progress-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 8px; }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+        .progress-fill.green { background: var(--green); }
+        .progress-fill.red { background: var(--red); }
+        .progress-fill.yellow { background: var(--yellow); }
+        .progress-fill.accent { background: var(--accent); }
+        .account-card { margin-bottom: 12px; }
+        .account-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .account-name { font-weight: 600; font-size: 15px; }
+        .account-balance { font-size: 20px; font-weight: 700; }
+        .account-stats { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+        .account-stat { display: flex; flex-direction: column; }
+        .account-stat-value { font-size: 16px; font-weight: 600; color: var(--text); }
+        .empty-state { text-align: center; padding: 40px; color: var(--muted); }
+        .skeleton { background: linear-gradient(90deg, var(--card) 25%, var(--border) 50%, var(--card) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 8px; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .footer { text-align: center; color: var(--muted); font-size: 12px; margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+    </style>
+</head>
+<body>
+    <div class="header-row">
+        <div>
+            <h1>🤖 QuantumTrader Bot Dashboard</h1>
+            <div class="subtitle"><span class="live-dot"></span>HyroTrader MCP Bridge — Live Performance Monitor</div>
+        </div>
+        <button class="refresh-btn" id="refreshBtn" onclick="loadData()">↻ Refresh</button>
+    </div>
+
+    <!-- Overview Stats -->
+    <div class="grid grid-4" style="margin-bottom: 20px;">
+        <div class="card stat-card">
+            <div class="stat-label">Total Equity</div>
+            <div class="stat-value" id="totalEquity">—</div>
+            <div class="stat-sub" id="totalAccounts">— accounts</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-label">Realized P&L</div>
+            <div class="stat-value" id="totalPnl">—</div>
+            <div class="stat-sub" id="pnlPercent">—</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-label">Open Positions</div>
+            <div class="stat-value yellow" id="openPositions">—</div>
+            <div class="stat-sub" id="positionSymbols">—</div>
+        </div>
+        <div class="card stat-card">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-value" id="winRate">—</div>
+            <div class="stat-sub" id="winLossDetail">—</div>
+        </div>
+    </div>
+
+    <!-- Accounts -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div class="section-title">📋 HyroTrader Accounts</div>
+        <div id="accountsContainer">
+            <div class="empty-state">Loading accounts...</div>
+        </div>
+    </div>
+
+    <!-- Open Positions -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div class="section-title">📊 Open Positions</div>
+        <div id="positionsContainer">
+            <div class="empty-state">No open positions</div>
+        </div>
+    </div>
+
+    <!-- Trade History -->
+    <div class="card" style="margin-bottom: 20px;">
+        <div class="section-title">📈 Recent Trades</div>
+        <div id="tradesContainer">
+            <div class="empty-state">Loading trade history...</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        QuantumTrader v2.3 — Automated Trading Bot on HyroTrader MCP API<br>
+        Running 24/7 on Render.com • Signal engine: your own strategy • Risk: GEMINI.md rules
+    </div>
+
+    <script>
+        const API = '/bot/api';
+
+        async function loadData() {
+            const btn = document.getElementById('refreshBtn');
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+            try {
+                const resp = await fetch(API);
+                if (!resp.ok) throw new Error('API returned ' + resp.status);
+                const data = await resp.json();
+                renderData(data);
+                btn.textContent = '↻ Refresh';
+            } catch (e) {
+                console.error('Load error:', e);
+                btn.textContent = 'Error — Retry';
+            }
+            btn.disabled = false;
+        }
+
+        function fmtUsd(v) {
+            if (v === null || v === undefined) return '—';
+            const sign = v >= 0 ? '' : '';
+            return sign + '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        function fmtPct(v) {
+            if (v === null || v === undefined) return '—';
+            return v.toFixed(2) + '%';
+        }
+
+        function pnlClass(v) {
+            if (v > 0) return 'pnl-positive';
+            if (v < 0) return 'pnl-negative';
+            return '';
+        }
+
+        function renderData(data) {
+            // Overview stats
+            const accounts = data.accounts || [];
+            const totalEq = accounts.reduce((s, a) => s + (a.equity || 0), 0);
+            const totalPnl = accounts.reduce((s, a) => s + (a.realizedPnl || 0), 0);
+            const totalTrades = accounts.reduce((s, a) => s + (a.totalTrades || 0), 0);
+            const totalWins = accounts.reduce((s, a) => s + (a.winningTrades || 0), 0);
+            const openPositions = data.positions || [];
+            const openCount = openPositions.length;
+
+            document.getElementById('totalEquity').textContent = fmtUsd(totalEq);
+            document.getElementById('totalAccounts').textContent = accounts.length + ' active accounts';
+
+            const pnlEl = document.getElementById('totalPnl');
+            pnlEl.textContent = (totalPnl >= 0 ? '+' : '') + fmtUsd(totalPnl);
+            pnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'green' : 'red');
+            const pnlPct = totalEq > 0 ? (totalPnl / totalEq * 100) : 0;
+            document.getElementById('pnlPercent').textContent = (pnlPct >= 0 ? '+' : '') + fmtPct(pnlPct) + ' return';
+
+            document.getElementById('openPositions').textContent = openCount;
+            const symbols = openPositions.map(p => p.symbol).join(', ');
+            document.getElementById('positionSymbols').textContent = symbols || 'None open';
+
+            const winRate = totalTrades > 0 ? (totalWins / totalTrades * 100) : 0;
+            const wrEl = document.getElementById('winRate');
+            wrEl.textContent = totalTrades > 0 ? winRate.toFixed(0) + '%' : '—';
+            wrEl.className = 'stat-value ' + (winRate >= 50 ? 'green' : winRate > 0 ? 'yellow' : '');
+            document.getElementById('winLossDetail').textContent = totalTrades > 0 ? totalWins + 'W / ' + (totalTrades - totalWins) + 'L' : 'No trades yet';
+
+            // Accounts
+            const accHtml = accounts.map(a => {
+                const pnlColor = (a.realizedPnl || 0) >= 0 ? 'green' : 'red';
+                const typeBadge = a.isFunded ? '<span class="badge badge-funded">FUNDED</span>' : '<span class="badge badge-eval">EVALUATION</span>';
+                const targetPct = a.targetPct || 0;
+                const lossPct = a.lossPct || 0;
+                const progressColor = targetPct > 0 ? 'accent' : 'red';
+                return `
+                    <div class="account-card">
+                        <div class="account-header">
+                            <div>
+                                <span class="account-name">${a.name || 'Account'}</span>
+                                <span style="margin-left: 8px;">${typeBadge}</span>
+                            </div>
+                            <div class="account-balance">${fmtUsd(a.equity)}</div>
+                        </div>
+                        <div class="account-stats">
+                            <div class="account-stat"><span>Realized P&L</span><span class="account-stat-value ${pnlColor}" style="color: var(--${pnlColor})">${a.realizedPnl >= 0 ? '+' : ''}${fmtUsd(a.realizedPnl)}</span></div>
+                            <div class="account-stat"><span>Trades</span><span class="account-stat-value">${a.totalTrades || 0}</span></div>
+                            <div class="account-stat"><span>Win Rate</span><span class="account-stat-value">${a.winningTrades || 0}/${a.totalTrades || 0}</span></div>
+                            <div class="account-stat"><span>Drawdown</span><span class="account-stat-value">${fmtPct(a.drawdownPct || 0)}</span></div>
+                            <div class="account-stat"><span>T-Days</span><span class="account-stat-value">${a.tradingDays || 0}/${a.minDays || 5}</span></div>
+                        </div>
+                        ${targetPct > 0 ? `<div class="progress-bar"><div class="progress-fill ${progressColor}" style="width: ${Math.min(targetPct, 100)}%"></div></div><div style="font-size:11px;color:var(--muted);margin-top:4px">Profit target: ${fmtPct(targetPct)} of goal</div>` : ''}
+                        ${lossPct > 0 ? `<div class="progress-bar" style="margin-top:4px"><div class="progress-fill red" style="width: ${Math.min(lossPct, 100)}%"></div></div><div style="font-size:11px;color:var(--muted);margin-top:4px">Loss used: ${fmtPct(lossPct)} of limit</div>` : ''}
+                    </div>
+                `;
+            }).join('');
+            document.getElementById('accountsContainer').innerHTML = accHtml || '<div class="empty-state">No active accounts</div>';
+
+            // Open positions
+            if (openCount === 0) {
+                document.getElementById('positionsContainer').innerHTML = '<div class="empty-state">No open positions — bot is scanning for signals</div>';
+            } else {
+                const posHtml = `
+                    <table>
+                        <thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Mark</th><th>P&L</th><th>Move</th><th>Leverage</th></tr></thead>
+                        <tbody>
+                            ${openPositions.map(p => {
+                                const move = p.entryPrice > 0 ? ((p.markPrice - p.entryPrice) / p.entryPrice * 100) : 0;
+                                const adjMove = p.side === 'Buy' ? move : -move;
+                                return `<tr>
+                                    <td><strong>${p.symbol}</strong></td>
+                                    <td><span class="badge ${p.side === 'Buy' ? 'badge-long' : 'badge-short'}">${p.side}</span></td>
+                                    <td>${p.entryPrice ? p.entryPrice.toFixed(4) : '—'}</td>
+                                    <td>${p.markPrice ? p.markPrice.toFixed(4) : '—'}</td>
+                                    <td class="${pnlClass(p.unrealizedPnl)}">${p.unrealizedPnl >= 0 ? '+' : ''}${fmtUsd(p.unrealizedPnl)}</td>
+                                    <td class="${adjMove >= 0 ? 'pnl-positive' : 'pnl-negative'}">${adjMove >= 0 ? '+' : ''}${adjMove.toFixed(2)}%</td>
+                                    <td>${p.leverage || 1}x</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                `;
+                document.getElementById('positionsContainer').innerHTML = posHtml;
+            }
+
+            // Trade history
+            const trades = data.trades || [];
+            if (trades.length === 0) {
+                document.getElementById('tradesContainer').innerHTML = '<div class="empty-state">No closed trades yet</div>';
+            } else {
+                const tradeHtml = `
+                    <table>
+                        <thead><tr><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>P&L</th><th>Close Type</th><th>Date</th></tr></thead>
+                        <tbody>
+                            ${trades.slice(0, 20).map(t => `
+                                <tr>
+                                    <td><strong>${t.symbol}</strong></td>
+                                    <td><span class="badge ${t.side === 'Buy' ? 'badge-long' : 'badge-short'}">${t.side}</span></td>
+                                    <td>${t.entryPrice ? t.entryPrice.toFixed(4) : '—'}</td>
+                                    <td>${t.exitPrice ? t.exitPrice.toFixed(4) : '—'}</td>
+                                    <td class="${pnlClass(t.netPnl)}">${t.netPnl >= 0 ? '+' : ''}${fmtUsd(t.netPnl)}</td>
+                                    <td>${t.closeType || '—'}</td>
+                                    <td style="font-size:11px;color:var(--muted)">${t.closedAt ? new Date(t.closedAt).toLocaleDateString() : '—'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+                document.getElementById('tradesContainer').innerHTML = tradeHtml;
+            }
+        }
+
+        // Load on page open
+        loadData();
+        // Auto-refresh every 30 seconds
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>

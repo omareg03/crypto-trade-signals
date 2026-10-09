@@ -65,9 +65,19 @@ BLACKLISTED_BASES = {"NEAR", "LINK"}  # block these coins specifically
 BLACKLISTED_STANDALONE = {"USDT"}  # only block if symbol IS exactly "USDT", not "BTCUSDT"
 
 # Symbols to scan on Hyro (crypto only — Hyro is a crypto prop firm)
+# Expanded list: covers all major + mid-cap USDT perps on Bybit
+# The bot will dynamically skip any that return no klines (unavailable on simulator)
 HYRO_CRYPTO_SYMBOLS = [
+    # majors
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT",
     "DOGEUSDT", "AVAXUSDT", "LTCUSDT", "BNBUSDT", "DOTUSDT",
+    # mid-caps confirmed working
+    "ARBUSDT", "INJUSDT", "SUIUSDT", "APTUSDT",
+    # more Bybit perps to try (auto-skipped if unavailable)
+    "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FILUSDT", "ATOMUSDT",
+    "AAVEUSDT", "UNIUSDT", "FTMUSDT", "ALGOUSDT", "RNDRUSDT",
+    "GALAUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "EOSUSDT",
+    "FLOWUSDT", "NEARUSDT", "LINKUSDT",  # last two are blacklisted by GEMINI.md but listed for discovery
 ]
 
 # Symbols already in active trades (skip if already positioned)
@@ -723,7 +733,12 @@ class HyroBridge:
             qty_steps = {
                 "BTCUSDT": 0.001, "ETHUSDT": 0.01, "SOLUSDT": 0.1, "XRPUSDT": 1,
                 "ADAUSDT": 1, "DOGEUSDT": 10, "AVAXUSDT": 0.1, "LTCUSDT": 0.01,
-                "BNBUSDT": 0.01, "DOTUSDT": 0.1,
+                "BNBUSDT": 0.01, "DOTUSDT": 0.1, "ARBUSDT": 0.1, "INJUSDT": 0.1,
+                "SUIUSDT": 0.1, "APTUSDT": 0.1, "PEPEUSDT": 100, "WIFUSDT": 1,
+                "BONKUSDT": 100, "FILUSDT": 0.1, "ATOMUSDT": 0.1, "AAVEUSDT": 0.01,
+                "UNIUSDT": 0.01, "FTMUSDT": 1, "ALGOUSDT": 1, "RNDRUSDT": 0.1,
+                "GALAUSDT": 1, "SANDUSDT": 1, "MANAUSDT": 1, "AXSUSDT": 0.1,
+                "EOSUSDT": 1, "FLOWUSDT": 1, "NEARUSDT": 0.1, "LINKUSDT": 0.1,
             }
             step = qty_steps.get(symbol, 0.01)
             qty = round(qty_raw / step) * step
@@ -735,6 +750,14 @@ class HyroBridge:
                 "BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.01, "XRPUSDT": 0.0001,
                 "ADAUSDT": 0.0001, "DOGEUSDT": 0.00001, "AVAXUSDT": 0.001,
                 "LTCUSDT": 0.01, "BNBUSDT": 0.01, "DOTUSDT": 0.001,
+                "ARBUSDT": 0.0001, "INJUSDT": 0.001, "SUIUSDT": 0.0001,
+                "APTUSDT": 0.001, "PEPEUSDT": 0.0000001, "WIFUSDT": 0.0001,
+                "BONKUSDT": 0.0000001, "FILUSDT": 0.01, "ATOMUSDT": 0.001,
+                "AAVEUSDT": 0.01, "UNIUSDT": 0.01, "FTMUSDT": 0.0001,
+                "ALGOUSDT": 0.0001, "RNDRUSDT": 0.001, "GALAUSDT": 0.0001,
+                "SANDUSDT": 0.0001, "MANAUSDT": 0.0001, "AXSUSDT": 0.001,
+                "EOSUSDT": 0.0001, "FLOWUSDT": 0.0001, "NEARUSDT": 0.001,
+                "LINKUSDT": 0.001,
             }
             tick = tick_steps.get(symbol, 0.01)
 

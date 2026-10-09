@@ -15,11 +15,14 @@ Features:
 import os
 import sys
 import time
+import json
+import asyncio
 import logging
 import threading
 from datetime import datetime
 from typing import List, Dict, Any
 
+import httpx2
 from flask import Flask, jsonify, render_template, request
 
 from data_engine import MarketDataEngine
@@ -27,6 +30,12 @@ from technical_analysis import TechnicalAnalyzer
 from signal_engine import SignalEngine, TradeSetup
 from risk_manager import RiskManager
 import config
+
+# MCP client for HyroTrader bot dashboard
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+MCP_SERVER_URL = "https://mcp-public.hyro.trade/mcp"
 
 # Configure logging
 logging.basicConfig(
@@ -248,6 +257,193 @@ def health():
         "service": "QuantumTrader Web Scanner",
         "timestamp": datetime.now().isoformat()
     }), 200
+
+
+# ─── Bot Dashboard Routes ──────────────────────────────────────────────────────
+
+@app.route("/bot")
+def bot_dashboard():
+    """Visual dashboard for the HyroTrader automated bot performance."""
+    return render_template("bot_dashboard.html")
+
+
+@app.route("/bot/api")
+def bot_api():
+    """API endpoint that fetches live HyroTrader bot data via MCP server."""
+    token = os.getenv("HYRO_AGENT_TOKEN", "")
+    if not token:
+        # Try .env file
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("HYRO_AGENT_TOKEN=") and not line.startswith("#"):
+                        token = line.split("=", 1)[1].strip()
+                        break
+
+    if not token or token == "YOUR_TOKEN_HERE":
+        return jsonify({"error": "No HYRO_AGENT_TOKEN configured", "accounts": [], "positions": [], "trades": []}), 200
+
+    try:
+        data = asyncio.run(_fetch_bot_data(token))
+        return jsonify(data), 200
+    except Exception as e:
+        logger.error(f"Bot API error: {e}", exc_info=True)
+        return jsonify({"error": str(e), "accounts": [], "positions": [], "trades": []}), 200
+
+
+async def _fetch_bot_data(token: str) -> dict:
+    """Fetch all bot performance data from HyroTrader MCP server."""
+    headers = {"Authorization": f"Bearer {token}"}
+    client = httpx2.AsyncClient(headers=headers, verify=False, timeout=30.0)
+
+    try:
+        async with streamable_http_client(MCP_SERVER_URL, http_client=client) as (read, write):
+            async with ClientSession(read, write) as session:
+                # 1. List all challenges
+                r = await session.call_tool("list_challenges", {})
+                raw = ""
+                for b in r.content:
+                    if hasattr(b, "text"):
+                        raw = b.text
+                        break
+                challenges_data = json.loads(raw) if raw else []
+                if isinstance(challenges_data, dict):
+                    challenges_data = challenges_data.get("challenges", challenges_data.get("data", [challenges_data]))
+
+                accounts = []
+                all_positions = []
+                all_trades = []
+
+                for ch in challenges_data:
+                    if not isinstance(ch, dict):
+                        continue
+                    status = ch.get("status", "")
+                    if status.lower() not in ("active", "ongoing", "in_progress"):
+                        continue
+
+                    ch_id = ch.get("publicId", "")
+                    if not ch_id:
+                        continue
+
+                    # Get challenge details for stage info
+                    r2 = await session.call_tool("get_challenge", {"challengePublicId": ch_id})
+                    details_raw = ""
+                    for b in r2.content:
+                        if hasattr(b, "text"):
+                            details_raw = b.text
+                            break
+                    details = json.loads(details_raw) if details_raw else {}
+                    if isinstance(details, dict) and "raw" in details:
+                        continue  # error response
+
+                    stage = details.get("currentStage", {}) if isinstance(details, dict) else {}
+                    stage_id = stage.get("publicId", "") if isinstance(stage, dict) else ""
+                    initial_balance = float(details.get("initialBalance", 0) if isinstance(details, dict) else 0)
+                    is_funded = "funded" in (stage.get("type", "") if isinstance(stage, dict) else "").lower()
+
+                    # Get stage metrics
+                    metrics = {}
+                    if stage_id:
+                        r3 = await session.call_tool("get_stage_metrics", {"stagePublicId": stage_id})
+                        for b in r3.content:
+                            if hasattr(b, "text"):
+                                try:
+                                    metrics = json.loads(b.text)
+                                except json.JSONDecodeError:
+                                    pass
+                                break
+
+                    eq_metrics = metrics.get("equityMetrics", {}) if isinstance(metrics, dict) else {}
+                    trade_metrics = metrics.get("tradeMetrics", {}) if isinstance(metrics, dict) else {}
+                    rules = stage.get("rules", {}) if isinstance(stage, dict) else {}
+
+                    equity = float(eq_metrics.get("equity", 0) or 0)
+                    realized_pnl = float(eq_metrics.get("currentLoss", 0) or 0)
+                    # currentLoss is negative, so realized P&L = -(currentLoss)
+                    realized_pnl = -realized_pnl if realized_pnl < 0 else realized_pnl
+
+                    # Actually currentLoss is the loss amount (positive), so PnL = -(currentLoss)
+                    current_loss = float(eq_metrics.get("currentLoss", 0) or 0)
+                    current_drawdown = float(eq_metrics.get("currentDrawdown", 0) or 0)
+
+                    long_trades = int(trade_metrics.get("longTrades", 0) or 0)
+                    short_trades = int(trade_metrics.get("shortTrades", 0) or 0)
+                    long_wins = int(trade_metrics.get("longWinningTrades", 0) or 0)
+                    short_wins = int(trade_metrics.get("shortWinningTrades", 0) or 0)
+                    total_trades = long_trades + short_trades
+                    winning_trades = long_wins + short_wins
+
+                    # Calculate progress percentages
+                    profit_target = float(rules.get("profitTarget", 0) or 0)
+                    drawdown_limit = float(rules.get("drawdownLimit", 0) or 0)
+                    equity_loss_limit = float(rules.get("equityLossLimit", 0) or 0)
+                    min_days = int(rules.get("minTradingDays", 5) or 5)
+
+                    target_pct = (realized_pnl / profit_target * 100) if profit_target > 0 else 0
+                    loss_pct = (current_loss / (equity_loss_limit / 100 * initial_balance) * 100) if equity_loss_limit > 0 and initial_balance > 0 else 0
+
+                    account = {
+                        "id": ch_id,
+                        "name": details.get("challengeName", ch_id) if isinstance(details, dict) else ch_id,
+                        "equity": equity,
+                        "initialBalance": initial_balance,
+                        "isFunded": is_funded,
+                        "realizedPnl": realized_pnl,
+                        "totalTrades": total_trades,
+                        "winningTrades": winning_trades,
+                        "longTrades": long_trades,
+                        "shortTrades": short_trades,
+                        "drawdownPct": current_drawdown,
+                        "lossPct": loss_pct,
+                        "targetPct": max(0, target_pct),
+                        "tradingDays": 0,  # would need trade history to count
+                        "minDays": min_days,
+                        "profitTarget": profit_target,
+                    }
+                    accounts.append(account)
+
+                    # Get open positions
+                    r4 = await session.call_tool("list_positions", {"challengePublicId": ch_id})
+                    for b in r4.content:
+                        if hasattr(b, "text"):
+                            try:
+                                pos_data = json.loads(b.text)
+                                pos_list = pos_data.get("list", pos_data.get("positions", [])) if isinstance(pos_data, dict) else []
+                                for p in pos_list:
+                                    if isinstance(p, dict):
+                                        p["accountName"] = account["name"]
+                                        all_positions.append(p)
+                            except json.JSONDecodeError:
+                                pass
+                            break
+
+                    # Get trade history
+                    if stage_id:
+                        r5 = await session.call_tool("get_stage_trades", {"stagePublicId": stage_id})
+                        for b in r5.content:
+                            if hasattr(b, "text"):
+                                try:
+                                    tr_data = json.loads(b.text)
+                                    tr_list = tr_data.get("list", tr_data.get("trades", [])) if isinstance(tr_data, dict) else (tr_data if isinstance(tr_data, list) else [])
+                                    for t in tr_list[:10]:
+                                        if isinstance(t, dict):
+                                            all_trades.append(t)
+                                except json.JSONDecodeError:
+                                    pass
+                            break
+
+                    await asyncio.sleep(0.5)  # rate limit
+
+                return {
+                    "accounts": accounts,
+                    "positions": all_positions,
+                    "trades": all_trades[:20],
+                    "timestamp": datetime.now().isoformat(),
+                }
+    finally:
+        await client.aclose()
 
 
 def find_available_port(preferred_port: int) -> int:
