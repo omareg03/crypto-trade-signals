@@ -625,11 +625,24 @@ class HyroBridge:
         # Manage existing positions (trailing stops, breakeven moves)
         await self._manage_existing_positions(ch_id, stage_id)
 
-        # Step 4: Scan for signals across ALL symbols — rank and pick the BEST
+        # Step 4: Scan for signals across ALL symbols and ALL timeframes — rank and pick the BEST
         max_risk_pct = GeminiRules.get_max_risk_pct(account_type)
         risk_usd = balance * (max_risk_pct / 100.0)
 
-        # Collect ALL valid signals across all symbols, then rank them
+        # Multi-timeframe scanning: check each symbol on multiple timeframes
+        # and pick the BEST signal across all timeframes for that symbol
+        # Bybit interval strings: "5" = 5min, "15" = 15min, "30" = 30min,
+        # "45" = 45min (may not exist on all pairs), "60" = 1H, "240" = 4H, "D" = 1D
+        TIMEFRAMES = [
+            ("5",  "5min"),
+            ("15", "15min"),
+            ("30", "30min"),
+            ("60", "1H"),
+            ("240", "4H"),
+            ("D",  "1D"),
+        ]
+
+        # Collect ALL valid signals across all symbols AND timeframes, then rank them
         all_valid_signals = []
 
         all_symbols = HYRO_CRYPTO_SYMBOLS + DISCOVERY_SYMBOLS
@@ -639,110 +652,128 @@ class HyroBridge:
                 continue
 
             # Rate-limit delay between symbols
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.5)
 
-            # Get klines from the simulator
-            try:
-                klines = await self.client.get_klines(ch_id, symbol, interval="240", limit=100)
-            except Exception as e:
-                log.debug("  No klines for %s: %s", symbol, e)
-                continue
+            # Track the best signal for this symbol across all timeframes
+            best_symbol_signal = None
+            best_symbol_score = -1
+            best_symbol_tf = ""
 
-            if not klines or len(klines) < 35:
-                continue  # symbol not available or not enough data — skip silently
+            for tf_interval, tf_label in TIMEFRAMES:
+                # Rate-limit delay between timeframes
+                await asyncio.sleep(0.3)
 
-            # Extract close prices from klines
-            prices = []
-            for k in klines:
-                if isinstance(k, (list, tuple)) and len(k) >= 5:
-                    prices.append(float(k[4]))  # close price
-                elif isinstance(k, dict):
-                    prices.append(float(k.get("close", k.get("c", 0))))
+                # Get klines from the simulator for this timeframe
+                try:
+                    klines = await self.client.get_klines(ch_id, symbol, interval=tf_interval, limit=100)
+                except Exception:
+                    continue
 
-            if len(prices) < 35:
-                continue
+                if not klines or len(klines) < 35:
+                    continue  # not enough data for this timeframe — skip
 
-            # Run signal engine
-            setup = self.engine.score_symbol(f"{symbol}-USD", prices)
-            if not setup or setup.confidence < MIN_CONFIDENCE:
-                continue
+                # Extract close prices from klines
+                prices = []
+                for k in klines:
+                    if isinstance(k, (list, tuple)) and len(k) >= 5:
+                        prices.append(float(k[4]))  # close price
+                    elif isinstance(k, dict):
+                        prices.append(float(k.get("close", k.get("c", 0))))
 
-            # Blacklist check
-            blocked, reason = GeminiRules.is_blacklisted(symbol)
-            if blocked:
-                log.info("  %s %s REJECTED: %s", symbol, setup.direction, reason)
-                continue
+                if len(prices) < 35:
+                    continue
 
-            # Get live ticker price
-            live_price = prices[-1]
-            try:
-                ticker = await self.client.get_tickers(ch_id, symbol)
-                if isinstance(ticker, dict):
-                    for key in ("lastPrice", "last", "price", "close"):
-                        val = ticker.get(key)
-                        if val:
-                            live_price = float(val)
-                            break
-                    if "list" in ticker and isinstance(ticker["list"], list) and ticker["list"]:
-                        live_price = float(ticker["list"][0].get("lastPrice") or ticker["list"][0].get("last") or live_price)
-            except Exception as e:
-                pass  # use last candle close as fallback
+                # Run signal engine on this timeframe's data
+                setup = self.engine.score_symbol(f"{symbol}-USD", prices)
+                if not setup or setup.confidence < MIN_CONFIDENCE:
+                    continue
 
-            # ATR-based SL/TP
-            recent_candles = klines[-14:] if len(klines) >= 14 else klines[-10:]
-            ranges = []
-            for k in recent_candles:
-                if isinstance(k, (list, tuple)) and len(k) >= 5:
-                    ranges.append(float(k[2]) - float(k[3]))
-                elif isinstance(k, dict):
-                    ranges.append(float(k.get("high", k.get("h", 0))) - float(k.get("low", k.get("l", 0))))
-            atr_proxy = sum(ranges) / len(ranges) if ranges else live_price * 0.025
-            sl_distance = atr_proxy * 1.5
-            sl_pct = max(0.015, min(0.05, sl_distance / live_price))
-            tp_distance = atr_proxy * 2.6
-            tp_pct = max(sl_pct * 1.6, tp_distance / live_price)
+                # Blacklist check
+                blocked, reason = GeminiRules.is_blacklisted(symbol)
+                if blocked:
+                    log.info("  %s %s REJECTED: %s", symbol, setup.direction, reason)
+                    break  # skip all timeframes for blacklisted symbols
 
-            if setup.direction == "LONG":
-                entry = live_price
-                sl = live_price * (1 - sl_pct)
-                tp = live_price * (1 + tp_pct)
-            else:
-                entry = live_price
-                sl = live_price * (1 + sl_pct)
-                tp = live_price * (1 - tp_pct)
+                # Get live ticker price
+                live_price = prices[-1]
+                try:
+                    ticker = await self.client.get_tickers(ch_id, symbol)
+                    if isinstance(ticker, dict):
+                        for key in ("lastPrice", "last", "price", "close"):
+                            val = ticker.get(key)
+                            if val:
+                                live_price = float(val)
+                                break
+                        if "list" in ticker and isinstance(ticker["list"], list) and ticker["list"]:
+                            live_price = float(ticker["list"][0].get("lastPrice") or ticker["list"][0].get("last") or live_price)
+                except Exception:
+                    pass  # use last candle close as fallback
 
-            rr = abs(tp - entry) / abs(entry - sl)
+                # ATR-based SL/TP — use the current timeframe's candle ranges
+                recent_candles = klines[-14:] if len(klines) >= 14 else klines[-10:]
+                ranges = []
+                for k in recent_candles:
+                    if isinstance(k, (list, tuple)) and len(k) >= 5:
+                        ranges.append(float(k[2]) - float(k[3]))
+                    elif isinstance(k, dict):
+                        ranges.append(float(k.get("high", k.get("h", 0))) - float(k.get("low", k.get("l", 0))))
+                atr_proxy = sum(ranges) / len(ranges) if ranges else live_price * 0.025
+                sl_distance = atr_proxy * 1.5
+                sl_pct = max(0.015, min(0.05, sl_distance / live_price))
+                tp_distance = atr_proxy * 2.6
+                tp_pct = max(sl_pct * 1.6, tp_distance / live_price)
 
-            # R:R check — reject if below 1.5
-            if rr < MIN_RR:
-                log.info("  %s %s REJECTED: R:R %.2f < %.1f minimum", symbol, setup.direction, rr, MIN_RR)
-                continue
+                if setup.direction == "LONG":
+                    entry = live_price
+                    sl = live_price * (1 - sl_pct)
+                    tp = live_price * (1 + tp_pct)
+                else:
+                    entry = live_price
+                    sl = live_price * (1 + sl_pct)
+                    tp = live_price * (1 - tp_pct)
 
-            # Calculate a composite score for ranking
-            # Score = confidence * 0.5 + rr * 30 + volume_factor * 20
-            # Higher confidence + higher R:R = better signal
-            score = (setup.confidence * 0.5) + (rr * 30) + (20 if setup.strategy == "Momentum" else 10)
+                rr = abs(tp - entry) / abs(entry - sl)
 
-            all_valid_signals.append({
-                "symbol": symbol,
-                "direction": setup.direction,
-                "strategy": setup.strategy,
-                "confidence": setup.confidence,
-                "rr": rr,
-                "entry": entry,
-                "sl": sl,
-                "tp": tp,
-                "live_price": live_price,
-                "atr_pct": (atr_proxy / live_price) * 100,
-                "sl_pct": sl_pct * 100,
-                "tp_pct": tp_pct * 100,
-                "score": score,
-                "klines": klines,
-            })
+                # R:R check — reject if below 1.5
+                if rr < MIN_RR:
+                    continue
 
-            log.info("  📡 %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | ATR %.2f%% | SL %.2f%% TP %.2f%%",
-                     symbol, setup.direction, setup.strategy,
-                     setup.confidence, rr, score, (atr_proxy/live_price)*100, sl_pct*100, tp_pct*100)
+                # Composite score: confidence + R:R + strategy bonus + timeframe bonus
+                # Faster timeframes (5min, 15min) get a small bonus for faster fills
+                # but higher timeframes (4H, 1D) get a reliability bonus
+                tf_bonus = {"5": 5, "15": 10, "30": 8, "60": 15, "240": 20, "D": 25}
+                score = (setup.confidence * 0.5) + (rr * 30) + (20 if setup.strategy == "Momentum" else 10) + tf_bonus.get(tf_interval, 0)
+
+                if score > best_symbol_score:
+                    best_symbol_score = score
+                    best_symbol_tf = tf_label
+                    best_symbol_signal = {
+                        "symbol": symbol,
+                        "direction": setup.direction,
+                        "strategy": setup.strategy,
+                        "confidence": setup.confidence,
+                        "rr": rr,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp,
+                        "live_price": live_price,
+                        "atr_pct": (atr_proxy / live_price) * 100,
+                        "sl_pct": sl_pct * 100,
+                        "tp_pct": tp_pct * 100,
+                        "score": score,
+                        "timeframe": tf_label,
+                        "klines": klines,
+                    }
+
+            # After checking all timeframes for this symbol, add the best one
+            if best_symbol_signal:
+                all_valid_signals.append(best_symbol_signal)
+                log.info("  📡 %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | TF: %s | ATR %.2f%% | SL %.2f%% TP %.2f%%",
+                         best_symbol_signal["symbol"], best_symbol_signal["direction"],
+                         best_symbol_signal["strategy"],
+                         best_symbol_signal["confidence"], best_symbol_signal["rr"],
+                         best_symbol_signal["score"], best_symbol_signal["timeframe"],
+                         best_symbol_signal["atr_pct"], best_symbol_signal["sl_pct"], best_symbol_signal["tp_pct"])
 
         # Step 5: Rank signals by score and pick the BEST one for this account
         if not all_valid_signals:
@@ -756,15 +787,16 @@ class HyroBridge:
         log.info("  🏆 SIGNAL RANKING (top 5):")
         for i, sig in enumerate(all_valid_signals[:5]):
             marker = "⭐" if i == 0 else "  "
-            log.info("     %s #%d: %s %s | Conf %d%% | R:R 1:%.2f | Score %.1f",
+            tf_info = f" | TF: {sig.get('timeframe', '?')}" if "timeframe" in sig else ""
+            log.info("     %s #%d: %s %s | Conf %d%% | R:R 1:%.2f | Score %.1f%s",
                      marker, i+1, sig["symbol"], sig["direction"],
-                     sig["confidence"], sig["rr"], sig["score"])
+                     sig["confidence"], sig["rr"], sig["score"], tf_info)
 
         # Pick the best signal
         best = all_valid_signals[0]
-        log.info("  ✅ BEST SIGNAL SELECTED: %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f",
+        log.info("  ✅ BEST SIGNAL SELECTED: %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | TF: %s",
                  best["symbol"], best["direction"], best["strategy"],
-                 best["confidence"], best["rr"], best["score"])
+                 best["confidence"], best["rr"], best["score"], best.get("timeframe", "4H"))
 
         # Step 6: Smart account routing — decide if this account should take this trade
         # Logic: funded accounts are more conservative, challenge accounts can be aggressive
