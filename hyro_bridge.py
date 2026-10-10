@@ -429,6 +429,20 @@ class HyroBridge:
         self.client = HyroMCPClient(token)
         self.engine = SignalEngine(TechnicalAnalyzer())
 
+    @staticmethod
+    def _is_account_frozen(ch_id: str) -> bool:
+        """
+        v2.8: Check if an account is frozen (payout in progress).
+        Reads the FROZEN_ACCOUNTS environment variable (comma-separated challenge IDs).
+        Returns True if the account should be skipped.
+        """
+        frozen_raw = os.getenv("FROZEN_ACCOUNTS", "").strip()
+        if not frozen_raw:
+            return False
+        # Parse comma-separated list, strip whitespace, ignore empty
+        frozen_ids = [fid.strip() for fid in frozen_raw.split(",") if fid.strip()]
+        return ch_id in frozen_ids
+
     async def run_scan_cycle(self):
         """One complete scan-and-trade cycle."""
         log.info("=" * 70)
@@ -529,6 +543,11 @@ class HyroBridge:
         status = challenge.get("status", "")
         if status.lower() not in ("ongoing", "active", "in_progress"):
             log.info("Challenge %s: status=%s — skipping", ch_id, status)
+            return
+
+        # v2.8: Check if this account is frozen (payout in progress)
+        if self._is_account_frozen(ch_id):
+            log.info("🧊 Account %s is FROZEN — skipping (payout in progress)", ch_id)
             return
 
         # Get full challenge details (stage ID is separate from challenge ID)
