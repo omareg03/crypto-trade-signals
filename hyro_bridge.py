@@ -767,6 +767,94 @@ class HyroBridge:
 
             # After checking all timeframes for this symbol, add the best one
             if best_symbol_signal:
+                # v2.7: Cross-timeframe confluence check
+                # Get the 4H trend direction for regime filter
+                trend_direction = None
+                try:
+                    tf_4h_klines = await self.client.get_klines(ch_id, symbol, interval="240", limit=200)
+                    if tf_4h_klines and len(tf_4h_klines) >= 50:
+                        tf_4h_prices = []
+                        for k in tf_4h_klines:
+                            if isinstance(k, (list, tuple)) and len(k) >= 5:
+                                tf_4h_prices.append(float(k[4]))
+                            elif isinstance(k, dict):
+                                tf_4h_prices.append(float(k.get("close", k.get("c", 0))))
+                        if len(tf_4h_prices) >= 50:
+                            ema_50_4h = sum(tf_4h_prices[-50:]) / 50.0
+                            current_4h = tf_4h_prices[-1]
+                            if current_4h > ema_50_4h * 1.005:
+                                trend_direction = "LONG"
+                            elif current_4h < ema_50_4h * 0.995:
+                                trend_direction = "SHORT"
+                            else:
+                                trend_direction = "RANGE"
+                except Exception:
+                    pass
+
+                # Regime filter: penalize signals fighting the 4H trend
+                if trend_direction and trend_direction != "RANGE":
+                    if best_symbol_signal["direction"] == trend_direction:
+                        best_symbol_signal["score"] += 20  # aligned with trend
+                        log.info("  ✅ %s signal ALIGNED with 4H %s trend (+20 bonus)", symbol, trend_direction)
+                    else:
+                        best_symbol_signal["score"] -= 15  # fighting the trend
+                        log.info("  ⚠️ %s signal FIGHTING 4H %s trend (-15 penalty)", symbol, trend_direction)
+                elif trend_direction == "RANGE":
+                    best_symbol_signal["score"] += 5  # range = both directions OK
+
+                # v2.7: Volume confirmation
+                try:
+                    tf_klines = best_symbol_signal.get("klines", [])
+                    if tf_klines and len(tf_klines) >= 20:
+                        volumes = []
+                        for k in tf_klines[-20:]:
+                            if isinstance(k, (list, tuple)) and len(k) >= 6:
+                                volumes.append(float(k[5]))
+                            elif isinstance(k, dict):
+                                volumes.append(float(k.get("volume", k.get("v", 0))))
+                        if volumes:
+                            avg_vol = sum(volumes[:-1]) / max(len(volumes) - 1, 1)
+                            current_vol = volumes[-1]
+                            if avg_vol > 0 and current_vol > avg_vol * 1.5:
+                                best_symbol_signal["score"] += 15
+                                log.info("  📊 %s volume surge: %.1fx average (+15 bonus)", symbol, current_vol / avg_vol)
+                            elif avg_vol > 0 and current_vol < avg_vol * 0.5:
+                                best_symbol_signal["score"] -= 10
+                                log.info("  📉 %s low volume: %.1fx average (-10 penalty)", symbol, current_vol / avg_vol)
+                except Exception:
+                    pass
+
+                # v2.7: RSI divergence detection (price lower low + RSI higher low = bullish)
+                try:
+                    tf_klines = best_symbol_signal.get("klines", [])
+                    if tf_klines and len(tf_klines) >= 35:
+                        div_prices = []
+                        for k in tf_klines:
+                            if isinstance(k, (list, tuple)) and len(k) >= 5:
+                                div_prices.append(float(k[4]))
+                            elif isinstance(k, dict):
+                                div_prices.append(float(k.get("close", k.get("c", 0))))
+                        if len(div_prices) >= 35:
+                            # Check last 30 candles for divergence
+                            recent = div_prices[-30:]
+                            rsi_calc = TechnicalAnalyzer.calculate_rsi(recent)
+                            rsi_val = rsi_calc.get("value", 50)
+                            
+                            # Find last two swing lows in price
+                            if len(recent) >= 10:
+                                price_lows = [min(recent[i:i+5]) for i in range(0, len(recent)-5, 5)]
+                                if len(price_lows) >= 2 and price_lows[-1] < price_lows[-2]:
+                                    # Price made lower low
+                                    if rsi_val > 35:  # RSI not as oversold = divergence
+                                        if best_symbol_signal["direction"] == "LONG":
+                                            best_symbol_signal["score"] += 25
+                                            log.info("  🔥 %s RSI BULLISH DIVERGENCE detected (+25 bonus!)", symbol)
+                except Exception:
+                    pass
+
+                # Update the score in the signal
+                best_symbol_signal["score"] = max(0, best_symbol_signal["score"])
+
                 all_valid_signals.append(best_symbol_signal)
                 log.info("  📡 %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | TF: %s | ATR %.2f%% | SL %.2f%% TP %.2f%%",
                          best_symbol_signal["symbol"], best_symbol_signal["direction"],
