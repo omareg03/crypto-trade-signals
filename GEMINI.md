@@ -99,7 +99,7 @@
   Tactic: small "qualifying" trades (e.g. $600–1,000 notional with a normal stop) can collect required days cheaply. They are NOT an income strategy.
 - **Max realized loss per single position**: 3% of initial balance.
 - **Inactivity**: account closes after 30 days without trading.
-- **Payout freeze**: after requesting a payout, do not open trades on that account until the USDC arrives.
+102a. **Payout freeze (HyroTrader official):** After requesting a payout, HyroTrader requires all positions closed and no new trades until the USDC arrives (~12-24h). To comply: suspend the bot on Render, close positions on the ONE account withdrawing, request payout, wait for USDC, then resume the bot. The other accounts can resume immediately after — only the withdrawing account must stay frozen during the 12-24h payout window.
 
 ## Outside Signal Services, Micro-Trading & Coinbase
 - Do NOT follow StocksToTrade / Tim Bohen / similar alert services. Claims (e.g. "88.7% win rate") are unverified marketing; they require market-hours screen time and options trading, incompatible with the user's 8am–6pm job and prop-firm swing system. Free education only.
