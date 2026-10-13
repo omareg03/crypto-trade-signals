@@ -3,6 +3,8 @@ __pycache__/
 *$py.class
 *.log
 .env
+.env.txt
+Render.com.txt
 .venv
 venv/
 ENV/
