@@ -62,8 +62,11 @@ FUNDED_MARGIN_LIMIT_PCT = 25.0  # funded margin limit (% of initial balance, Hyr
 DAILY_DD_SAFETY_BUFFER = 0.5    # v2.10: stop entering when drawdown hits 50% of its limit (stricter)
 MAX_CONSECUTIVE_LOSSES = 3      # v2.10: pause account after N consecutive losing trades
 COOLDOWN_HOURS = 6              # v2.10: cooldown before resuming after a losing streak
+MAX_POSITION_NOTIONAL_PCT = 25.0  # v3.1: cap single-position notional to 25% of equity (gap/slippage protection)
+STALE_ORDER_HOURS = 6             # v3.1: cancel unfilled entry limit orders older than this (hours)
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"  # v2.9: if "1", scan+validate but never place orders
-VERSION = "3.0.0"  # v3.0: momentum short branch, losing-streak circuit breaker, hard trend rejection, stricter DD guard
+VERSION = "3.1.0"  # v3.1: 1R trailing persistence, notional cap, risk-off gate, stale-order cleanup, precision safety
+STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge_state.json")
 
 # Blacklisted assets (Rule 90-92)
 # NEAR and LINK are blacklisted as BASE assets (e.g., NEARUSDT, LINKUSDT)
@@ -89,6 +92,70 @@ def get_correlation_group(symbol: str) -> str:
         if sym in members:
             return group
     return sym
+
+
+# v3.1: Order-precision tables moved to module level (were local to _process_challenge).
+# get_instruments() is UNUSABLE via MCP — it returns every instrument and blows the
+# 1MB SSE limit ("Server-sent event exceeded the 1048576 byte limit"). So these
+# hardcoded Bybit contract specs are the ONLY reliable precision source. Any symbol
+# NOT present here is skipped at order time (never defaulted to a dangerous 0.01 tick).
+QTY_STEPS = {
+    "BTCUSDT": 0.001, "ETHUSDT": 0.01, "SOLUSDT": 0.1, "XRPUSDT": 1,
+    "ADAUSDT": 1, "DOGEUSDT": 10, "AVAXUSDT": 0.1, "LTCUSDT": 0.01,
+    "BNBUSDT": 0.01, "DOTUSDT": 0.1, "ARBUSDT": 0.1, "INJUSDT": 0.1,
+    "SUIUSDT": 0.1, "APTUSDT": 0.1, "PEPEUSDT": 100, "WIFUSDT": 1,
+    "BONKUSDT": 100, "FILUSDT": 0.1, "ATOMUSDT": 0.1, "AAVEUSDT": 0.01,
+    "UNIUSDT": 0.01, "FTMUSDT": 1, "ALGOUSDT": 1, "RNDRUSDT": 0.1,
+    "GALAUSDT": 1, "SANDUSDT": 1, "MANAUSDT": 1, "AXSUSDT": 0.1,
+    "EOSUSDT": 1, "FLOWUSDT": 1, "NEARUSDT": 0.1, "LINKUSDT": 0.1,
+}
+
+TICK_STEPS = {
+    "BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.01, "XRPUSDT": 0.0001,
+    "ADAUSDT": 0.0001, "DOGEUSDT": 0.00001, "AVAXUSDT": 0.001,
+    "LTCUSDT": 0.01, "BNBUSDT": 0.01, "DOTUSDT": 0.001,
+    "ARBUSDT": 0.0001, "INJUSDT": 0.001, "SUIUSDT": 0.0001,
+    "APTUSDT": 0.001, "PEPEUSDT": 0.0000001, "WIFUSDT": 0.0001,
+    "BONKUSDT": 0.0000001, "FILUSDT": 0.01, "ATOMUSDT": 0.001,
+    "AAVEUSDT": 0.01, "UNIUSDT": 0.01, "FTMUSDT": 0.0001,
+    "ALGOUSDT": 0.0001, "RNDRUSDT": 0.001, "GALAUSDT": 0.0001,
+    "SANDUSDT": 0.0001, "MANAUSDT": 0.0001, "AXSUSDT": 0.001,
+    "EOSUSDT": 0.0001, "FLOWUSDT": 0.0001, "NEARUSDT": 0.001,
+    "LINKUSDT": 0.001,
+}
+
+
+def fmt_price(symbol: str, p: float) -> str:
+    """Round a price to the symbol's tick size and format as a decimal string."""
+    tick = TICK_STEPS.get(symbol)
+    if tick is None:
+        raise ValueError(f"no tick size for {symbol}")
+    p_rounded = round(p / tick) * tick
+    if tick >= 1:
+        return f"{p_rounded:.0f}"
+    if tick >= 0.1:
+        return f"{p_rounded:.1f}"
+    if tick >= 0.01:
+        return f"{p_rounded:.2f}"
+    if tick >= 0.001:
+        return f"{p_rounded:.3f}"
+    if tick >= 0.0001:
+        return f"{p_rounded:.4f}"
+    return f"{p_rounded:.6f}"
+
+
+def fmt_qty(symbol: str, q: float) -> str:
+    """Round a quantity to the symbol's qty step and format as a decimal string."""
+    step = QTY_STEPS.get(symbol)
+    if step is None:
+        raise ValueError(f"no qty step for {symbol}")
+    if step >= 1:
+        return f"{q:.0f}"
+    if step >= 0.1:
+        return f"{q:.1f}"
+    if step >= 0.01:
+        return f"{q:.2f}"
+    return f"{q:.3f}"
 
 # Symbols to scan on Hyro (crypto only — HyroTrader is a crypto prop firm)
 # This is the SEED list — the bot also dynamically discovers available symbols
@@ -468,6 +535,22 @@ class HyroBridge:
     def __init__(self, token: str):
         self.client = HyroMCPClient(token)
         self.engine = SignalEngine(TechnicalAnalyzer())
+        self.state = self._load_state()
+
+    # ─── Persistent state (bridge_state.json) ──────────────────────────────
+    def _load_state(self) -> dict:
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_state(self) -> None:
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.state, f, indent=2)
+        except Exception as e:
+            log.debug("Could not save state: %s", e)
 
     @staticmethod
     def _is_account_frozen(ch_id: str) -> bool:
@@ -482,6 +565,83 @@ class HyroBridge:
         # Parse comma-separated list, strip whitespace, ignore empty
         frozen_ids = [fid.strip() for fid in frozen_raw.split(",") if fid.strip()]
         return ch_id in frozen_ids
+
+    async def _get_market_regime(self, ch_id: str) -> str:
+        """
+        v3.1: Global risk-appetite gate using BTC as the crypto bellwether.
+        BTC leads liquidity cascades across the whole market: when BTC is in a
+        strong downtrend, even altcoins with bullish setups get liquidated in
+        the flush (the exact failure mode that stopped out 8 of 9 trades).
+        Returns 'risk-on', 'risk-off', or 'range' from BTC's daily 50-EMA.
+        """
+        try:
+            klines = await self.client.get_klines(ch_id, "BTCUSDT", interval="D", limit=60)
+            if not klines or len(klines) < 50:
+                return "range"
+            closes = []
+            for k in klines:
+                if isinstance(k, (list, tuple)) and len(k) >= 5:
+                    closes.append(float(k[4]))
+                elif isinstance(k, dict):
+                    closes.append(float(k.get("close", k.get("c", 0))))
+            closes = [c for c in closes if c > 0]
+            if len(closes) < 50:
+                return "range"
+            ema50 = sum(closes[-50:]) / 50.0
+            last = closes[-1]
+            if last < ema50 * 0.995:
+                return "risk-off"
+            if last > ema50 * 1.005:
+                return "risk-on"
+            return "range"
+        except Exception as e:
+            log.debug("Regime check failed: %s", e)
+            return "range"
+
+    async def _cancel_stale_entry_orders(self, ch_id: str):
+        """
+        v3.1: Cancel unfilled ENTRY limit orders older than STALE_ORDER_HOURS.
+        TP/SL protective legs (reduceOnly=True) are never touched. Prevents
+        dead limit orders from accumulating notional and filling days later
+        at a stale price.
+        """
+        try:
+            orders = await self.client.list_open_orders(ch_id)
+        except Exception as e:
+            log.debug("Could not list open orders for %s: %s", ch_id, e)
+            return
+        if not isinstance(orders, list):
+            return
+        now_ms = time.time() * 1000.0
+        stale_ms = STALE_ORDER_HOURS * 3600.0 * 1000.0
+        for o in orders:
+            if not isinstance(o, dict):
+                continue
+            if o.get("reduceOnly") is True:
+                continue  # TP/SL leg — leave it
+            if str(o.get("orderType", "")).lower() != "limit":
+                continue  # only entry limits we placed
+            raw_created = o.get("createdTime") or o.get("updatedTime")
+            if not raw_created:
+                continue
+            try:
+                created = float(raw_created)
+            except (TypeError, ValueError):
+                continue
+            if created <= 0:
+                continue
+            age_ms = now_ms - created
+            if age_ms > stale_ms:
+                oid = o.get("orderId") or o.get("orderLinkId")
+                if not oid:
+                    continue
+                sym = o.get("symbol", "?")
+                log.info("  🧹 Cancelling stale entry limit %s %s (age %.1fh)",
+                         sym, oid, age_ms / 3600000.0)
+                try:
+                    await self.client.cancel_order(ch_id, oid)
+                except Exception as e:
+                    log.warning("  Could not cancel %s: %s", oid, e)
 
     async def run_scan_cycle(self):
         """One complete scan-and-trade cycle."""
@@ -730,12 +890,26 @@ class HyroBridge:
             log.warning("  ⚠️ MARGIN BREACH: existing margin $%.2f > limit $%.2f — will NOT add positions",
                         existing_margin, margin_limit)
 
-        # v2.10: Losing-streak circuit breaker — stop after N consecutive losses
+        # v3.1: Global risk-off gate (BTC trend) + stale entry-order cleanup
+        regime = await self._get_market_regime(ch_id)
+        if regime == "risk-off":
+            log.info("  🌧️ RISK-OFF REGIME (BTC below daily 50-EMA) — new LONGS blocked, SHORTS allowed")
+        elif regime == "risk-on":
+            log.info("  ☀️ RISK-ON REGIME (BTC above daily 50-EMA) — normal trading")
+        else:
+            log.info("  🌫️ RANGE REGIME (BTC flat vs 50-EMA) — normal trading")
+        await self._cancel_stale_entry_orders(ch_id)
+
+        # v3.1: Losing-streak circuit breaker — stop after N consecutive losses.
+        # Sorted newest-first and filtered to accepted (not invalidated) trades so
+        # the consecutive count is independent of API ordering.
         try:
             _trades = await self.client.get_stage_trades(stage_id)
             if isinstance(_trades, dict):
                 _trades = _trades.get("data", _trades.get("list", []))
             _trades = [t for t in (_trades or []) if isinstance(t, dict)]
+            _trades = [t for t in _trades if t.get("accepted", True) and not t.get("invalidated", False)]
+            _trades.sort(key=lambda t: str(t.get("timestamp", "")), reverse=True)
             _consec = 0
             _last_ts = None
             for _t in _trades:
@@ -828,6 +1002,11 @@ class HyroBridge:
                 if blocked:
                     log.info("  %s %s REJECTED: %s", symbol, setup.direction, reason)
                     break  # skip all timeframes for blacklisted symbols
+
+                # v3.1: Global risk-off gate — block LONGS when BTC is in a downtrend
+                if regime == "risk-off" and setup.direction == "LONG":
+                    log.info("  🌧️ %s LONG blocked — BTC risk-off regime (shorts only)", symbol)
+                    continue
 
                 # Get live ticker price
                 live_price = prices[-1]
@@ -1051,67 +1230,35 @@ class HyroBridge:
 
         qty_raw = risk_usd / risk_per_unit
 
-        # Round qty to Bybit qty step (varies by symbol)
-        qty_steps = {
-            "BTCUSDT": 0.001, "ETHUSDT": 0.01, "SOLUSDT": 0.1, "XRPUSDT": 1,
-            "ADAUSDT": 1, "DOGEUSDT": 10, "AVAXUSDT": 0.1, "LTCUSDT": 0.01,
-            "BNBUSDT": 0.01, "DOTUSDT": 0.1, "ARBUSDT": 0.1, "INJUSDT": 0.1,
-            "SUIUSDT": 0.1, "APTUSDT": 0.1, "PEPEUSDT": 100, "WIFUSDT": 1,
-            "BONKUSDT": 100, "FILUSDT": 0.1, "ATOMUSDT": 0.1, "AAVEUSDT": 0.01,
-            "UNIUSDT": 0.01, "FTMUSDT": 1, "ALGOUSDT": 1, "RNDRUSDT": 0.1,
-            "GALAUSDT": 1, "SANDUSDT": 1, "MANAUSDT": 1, "AXSUSDT": 0.1,
-            "EOSUSDT": 1, "FLOWUSDT": 1, "NEARUSDT": 0.1, "LINKUSDT": 0.1,
-        }
-        step = qty_steps.get(symbol, 0.01)
+        # v3.1: Precision safety — only trade symbols with a verified contract spec.
+        # get_instruments() is unusable via MCP (blows the 1MB SSE limit), so an
+        # unmapped symbol is SKIPPED rather than defaulted to a dangerous 0.01 tick.
+        if symbol not in QTY_STEPS or symbol not in TICK_STEPS:
+            log.warning("  🛑 PRECISION GUARD: no qty/tick spec for %s — skipping (avoid malformed order)", symbol)
+            return
+
+        step = QTY_STEPS[symbol]
         qty = round(qty_raw / step) * step
         if qty < step:
             qty = step  # minimum 1 step
 
-        # Round prices to tick size
-        tick_steps = {
-            "BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.01, "XRPUSDT": 0.0001,
-            "ADAUSDT": 0.0001, "DOGEUSDT": 0.00001, "AVAXUSDT": 0.001,
-            "LTCUSDT": 0.01, "BNBUSDT": 0.01, "DOTUSDT": 0.001,
-            "ARBUSDT": 0.0001, "INJUSDT": 0.001, "SUIUSDT": 0.0001,
-            "APTUSDT": 0.001, "PEPEUSDT": 0.0000001, "WIFUSDT": 0.0001,
-            "BONKUSDT": 0.0000001, "FILUSDT": 0.01, "ATOMUSDT": 0.001,
-            "AAVEUSDT": 0.01, "UNIUSDT": 0.01, "FTMUSDT": 0.0001,
-            "ALGOUSDT": 0.0001, "RNDRUSDT": 0.001, "GALAUSDT": 0.0001,
-            "SANDUSDT": 0.0001, "MANAUSDT": 0.0001, "AXSUSDT": 0.001,
-            "EOSUSDT": 0.0001, "FLOWUSDT": 0.0001, "NEARUSDT": 0.001,
-            "LINKUSDT": 0.001,
-        }
-        tick = tick_steps.get(symbol, 0.01)
+        # v3.1: Notional cap — limit single-position exposure to 25% of equity.
+        # Risk-based sizing alone ignores gap/slippage: a tight SL means huge
+        # notional, so one gap through the stop can blow the whole daily DD.
+        max_notional = balance * (MAX_POSITION_NOTIONAL_PCT / 100.0)
+        if qty * entry > max_notional:
+            capped_qty = round((max_notional / entry) / step) * step
+            if capped_qty < step:
+                capped_qty = step
+            log.info("  📏 NOTIONAL CAP: %s qty %s -> %s (cap $%.2f = %.0f%% of balance)",
+                     symbol, fmt_qty(symbol, qty), fmt_qty(symbol, capped_qty),
+                     max_notional, MAX_POSITION_NOTIONAL_PCT)
+            qty = capped_qty
 
-        def fmt_price(p):
-            p_rounded = round(p / tick) * tick
-            if tick >= 1:
-                return f"{p_rounded:.0f}"
-            elif tick >= 0.1:
-                return f"{p_rounded:.1f}"
-            elif tick >= 0.01:
-                return f"{p_rounded:.2f}"
-            elif tick >= 0.001:
-                return f"{p_rounded:.3f}"
-            elif tick >= 0.0001:
-                return f"{p_rounded:.4f}"
-            else:
-                return f"{p_rounded:.6f}"
-
-        def fmt_qty(q):
-            if step >= 1:
-                return f"{q:.0f}"
-            elif step >= 0.1:
-                return f"{q:.1f}"
-            elif step >= 0.01:
-                return f"{q:.2f}"
-            else:
-                return f"{q:.3f}"
-
-        qty_str = fmt_qty(qty)
-        entry_str = fmt_price(entry)
-        sl_str = fmt_price(sl)
-        tp_str = fmt_price(tp)
+        qty_str = fmt_qty(symbol, qty)
+        entry_str = fmt_price(symbol, entry)
+        sl_str = fmt_price(symbol, sl)
+        tp_str = fmt_price(symbol, tp)
 
         # v2.9: ENTRY GUARDS — hard stops before any new position is placed
         new_notional = qty * entry
@@ -1185,7 +1332,12 @@ class HyroBridge:
             log.error("  ❌ Order failed for %s: %s", symbol, e)
 
     async def _manage_existing_positions(self, ch_id: str, stage_id: str):
-        """Manage open positions: apply trailing stops, check TP/SL, log PnL."""
+        """
+        Manage open positions: apply trailing stops using a PERSISTED 1R reference.
+        v3.1 fix: recomputing 1R from the current SL yields 0 once SL hits breakeven,
+        which silently killed the +1R/+2R ladder (v3.0 bug). We persist entry-time 1R
+        per position in bridge_state.json and reconstruct it on first sight.
+        """
         try:
             positions = await self.client.list_positions(ch_id)
         except Exception as e:
@@ -1195,6 +1347,7 @@ class HyroBridge:
         if not positions:
             return
 
+        now_pos_keys = set()
         for pos in positions:
             if not isinstance(pos, dict):
                 continue
@@ -1204,72 +1357,78 @@ class HyroBridge:
             entry_price = float(pos.get("avgPrice", pos.get("entryPrice", pos.get("entry", 0))) or 0)
             mark_price = float(pos.get("markPrice", pos.get("mark", 0)) or 0)
             unrealized_pnl = float(pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", 0))) or 0)
-            qty = float(pos.get("size", pos.get("qty", 0)) or 0)
-            leverage = float(pos.get("leverage", 1) or 1)
+            qty = abs(float(pos.get("size", pos.get("qty", 0)) or 0))
+            current_sl = float(pos.get("stopLoss", pos.get("stop_loss", 0)) or 0)
 
-            if not symbol or entry_price <= 0:
+            if not symbol or entry_price <= 0 or qty <= 0:
                 continue
 
-            # Calculate how far price has moved in our favor
-            if side.lower() in ("buy", "long"):
+            key = f"{ch_id}:{symbol}"
+            now_pos_keys.add(key)
+            is_long = str(side).lower() in ("buy", "long")
+
+            # Move in our favor
+            if is_long:
                 move_pct = (mark_price - entry_price) / entry_price * 100
             else:
                 move_pct = (entry_price - mark_price) / entry_price * 100
 
-            # Calculate risk in USD (entry to current SL if available)
-            current_sl = float(pos.get("stopLoss", pos.get("stop_loss", 0)) or 0)
-            current_tp = float(pos.get("takeProfit", pos.get("take_profit", 0)) or 0)
-            risk_per_unit = abs(entry_price - current_sl) if current_sl > 0 else 0
-            risk_usd = risk_per_unit * qty if risk_per_unit > 0 else 0
+            # ── Persistent 1R reference ──────────────────────────────────────
+            stored = self.state.get("positions", {}).get(key)
+            one_r = float(stored.get("one_r", 0) or 0) if isinstance(stored, dict) else 0.0
+            if one_r <= 0 and current_sl > 0:
+                one_r = abs(entry_price - current_sl)  # reconstruct from original SL
+            if one_r <= 0:
+                log.info("  📊 POSITION: %s %s | Entry %.6f | Mark %.6f | PnL $%.2f | Move %.2f%% (no 1R ref yet)",
+                         symbol, side, entry_price, mark_price, unrealized_pnl, move_pct)
+                continue
 
-            log.info("  📊 POSITION: %s %s | Entry %.6f | Mark %.6f | PnL $%.2f | Move %.2f%%",
-                     symbol, side, entry_price, mark_price, unrealized_pnl, move_pct)
+            self.state.setdefault("positions", {})[key] = {
+                "one_r": one_r,
+                "entry": entry_price,
+                "side": side,
+            }
+            self._save_state()
 
-            # TRAILING STOP LOGIC:
-            # When position is up 1R (100% of initial risk), move SL to breakeven
-            # When position is up 2R, move SL to 1R profit
-            # When position is up 3R, move SL to 2R profit
-            if risk_usd > 0 and risk_per_unit > 0:
-                r_multiple = (unrealized_pnl / risk_usd) if risk_usd > 0 else 0
+            risk_usd = one_r * qty
+            r_multiple = (unrealized_pnl / risk_usd) if risk_usd > 0 else 0.0
 
-                if r_multiple >= 1.0 and r_multiple < 2.0:
-                    # Move SL to breakeven
-                    if side.lower() in ("buy", "long"):
-                        new_sl = entry_price
-                    else:
-                        new_sl = entry_price
+            log.info("  📊 POSITION: %s %s | Entry %.6f | Mark %.6f | PnL $%.2f | Move %.2f%% | %.2fR",
+                     symbol, side, entry_price, mark_price, unrealized_pnl, move_pct, r_multiple)
 
-                    # Only tighten if current SL is wider than breakeven
-                    if current_sl > 0:
-                        is_long = side.lower() in ("buy", "long")
-                        should_tighten = (is_long and new_sl > current_sl) or (not is_long and new_sl < current_sl)
-                        if should_tighten:
-                            log.info("  📌 TRAILING: %s — moving SL to breakeven (%.6f), locking in $0 risk", symbol, new_sl)
-                            try:
-                                sl_str = f"{new_sl:.6f}"
-                                await self.client.set_trading_stop(ch_id, symbol, stop_loss=sl_str)
-                                log.info("  ✅ Trailing stop updated for %s", symbol)
-                            except Exception as e:
-                                log.warning("  Could not set trailing stop for %s: %s", symbol, e)
+            # Trailing ladder: +1R -> breakeven, +2R -> +1R profit
+            new_sl = None
+            reason = ""
+            if r_multiple >= 2.0:
+                new_sl = entry_price + one_r if is_long else entry_price - one_r
+                reason = "+1R (lock $%.2f)" % risk_usd
+            elif r_multiple >= 1.0:
+                new_sl = entry_price
+                reason = "breakeven"
 
-                elif r_multiple >= 2.0:
-                    # Move SL to 1R profit
-                    if side.lower() in ("buy", "long"):
-                        new_sl = entry_price + risk_per_unit
-                    else:
-                        new_sl = entry_price - risk_per_unit
+            if new_sl is None:
+                continue
 
-                    if current_sl > 0:
-                        is_long = side.lower() in ("buy", "long")
-                        should_tighten = (is_long and new_sl > current_sl) or (not is_long and new_sl < current_sl)
-                        if should_tighten:
-                            log.info("  📌 TRAILING: %s — moving SL to +1R (%.6f), locking in $%.2f profit", symbol, new_sl, risk_usd)
-                            try:
-                                sl_str = f"{new_sl:.6f}"
-                                await self.client.set_trading_stop(ch_id, symbol, stop_loss=sl_str)
-                                log.info("  ✅ Trailing stop updated for %s", symbol)
-                            except Exception as e:
-                                log.warning("  Could not set trailing stop for %s: %s", symbol, e)
+            # Only tighten (never widen)
+            if current_sl > 0:
+                should_tighten = (is_long and new_sl > current_sl) or (not is_long and new_sl < current_sl)
+                if not should_tighten:
+                    continue
+
+            try:
+                sl_str = fmt_price(symbol, new_sl)
+                await self.client.set_trading_stop(ch_id, symbol, stop_loss=sl_str)
+                log.info("  📌 TRAILING: %s -> SL %s (%s)", symbol, sl_str, reason)
+            except Exception as e:
+                log.warning("  Could not set trailing stop for %s: %s", symbol, e)
+
+        # Prune state for positions that no longer exist (closed)
+        stored = self.state.get("positions", {})
+        gone = [k for k in stored if k.startswith(ch_id + ":") and k not in now_pos_keys]
+        for k in gone:
+            del stored[k]
+        if gone:
+            self._save_state()
 
 
 # ─── Main Entry Point ──────────────────────────────────────────────────────────
