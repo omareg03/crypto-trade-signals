@@ -1,0 +1,14 @@
+{
+ "engine_check": {
+  "samples": 2500,
+  "direction_agreement_rev_vs_fwd": 0.497,
+  "rev_signal_mean_24h_dir_return_%": [
+   -0.10932592911138864,
+   1811
+  ],
+  "fwd_signal_mean_24h_dir_return_%": [
+   -0.0937739728225567,
+   1801
+  ]
+ }
+}

@@ -118,3 +118,16 @@
 - The user MUST be consulted before every trade entry.
 - Always provide: coin, direction, entry, SL, TP, risk %, position size, and reasoning.
 - Always flag if the signal is Mean Reversion (requires macro cross-check).
+
+## Bot v3.2 (deployed Oct 13, 2026) — HyroTrader automation rules
+- Strategy: 4H Donchian(20) breakout, LONG only; close > EMA200 (4H); BTC daily close not below SMA50*0.995.
+  Stop 3.0xATR(14); chandelier trail 4.5xATR on closed bars; no fixed TP. Research: research/ + V3.2_HANDOFF.md.
+- Why: v3.1 fed newest-first klines unsorted (signals = coin flip) and its stack had no edge even when fixed.
+  v3.2 backtest (Jul-2023..Oct-2026, fees+slippage): +0.32R/trade in-sample, +0.21R/trade out-of-sample.
+- Risk: 0.5% of initial per trade (eval and funded), scaled down as total loss grows (floor 50%).
+  Max 3 positions, max 2 per correlation cluster, 25% notional cap, funded margin <= 80% of marginLimit.
+- Daily-DD protection: give-back shield keeps (all stops hit) <= 70% of the daily limit measured from 00:00 UTC
+  equity incl. open profit; close-all brake at 75%. Keep-alive round trip at 26 days without a closed trade.
+- Expectation (walk-forward sim): slow grinder — many months per +10% challenge, rarely fails; funded 5K pays
+  roughly $0-600/yr at this risk. Not a $3,200/month engine at current account sizes; scale capital, not risk.
+- Do NOT raise risk to 1%: out-of-sample it failed ~50% of challenge windows (daily-DD breaches).

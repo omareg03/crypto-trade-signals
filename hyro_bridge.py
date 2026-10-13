@@ -1,1504 +1,797 @@
 """
-hyro_bridge.py — QuantumTrader ↔ HyroTrader MCP Bridge
+hyro_bridge.py — QuantumTrader v3.2 <-> HyroTrader MCP bridge.
 
-Automated trading bridge that connects your QuantumTrader signal engine
-to HyroTrader's MCP server, enabling fully automated crypto trading on
-your Hyro challenges while you're at work.
+Strategy (research-backed, see research/ + V3.2_HANDOFF.md):
+  4H Donchian(20) breakout, LONG only, with trend + market filters:
+    close > highest high of the prior 20 CLOSED bars
+    close > EMA200 (4H)
+    BTC daily close not below its SMA50 * 0.995 (market regime gate)
+  Stop  = entry - 3.0 x ATR(14, Wilder)     (sized so the stop = exactly the risk budget)
+  Exit  = chandelier trail: highest high since entry - 4.5 x ATR, tightened once per closed bar.
+  No fixed take-profit (winners run; ~1/3 win rate, avg win ~2.3R vs avg loss ~0.8R).
+Backtest Jul-2023..Oct-2026, 32 coins, fees+slippage: per-trade +0.32R in-sample, +0.21R out-of-sample.
 
-LEGAL: HyroTrader allows trading bots as long as the strategy is your own.
-This bot uses YOUR signal_engine.py, YOUR technical_analysis.py, YOUR
-config.py, and enforces YOUR GEMINI.md rules. It is 100% your own strategy.
+Why v3.1 was replaced: get_klines returns rows NEWEST-FIRST and v3.1 never sorted them, so every
+indicator ran on time-reversed data (signal direction matched the correct one 49.7% of the time),
+and even with correct ordering that signal stack had no edge (-0.05R/trade as a portfolio).
 
-USAGE:
-  1. Paste your agent token in .env (HYRO_AGENT_TOKEN=...)
-  2. Run: python hyro_bridge.py
-  3. It will scan, validate, and place trades automatically.
-  4. Review hyro_bridge.log each evening.
-
-SAFETY:
-  - Checks get_stage_metrics before every trade (drawdown limits)
-  - Previews every order before placing it (preview_order)
-  - Enforces GEMINI.md rules (R:R >= 1.5, blacklists, risk sizing)
-  - Max 1 new position per challenge per scan cycle
-  - Logs every action to hyro_bridge.log
-  - Never trades on a HALTED challenge
+LEGAL: HyroTrader allows bots when the strategy is your own. This is Omar E. Garcia's own system.
 """
 
 import asyncio
 import json
 import logging
+import math
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 
-# ─── MCP client imports ───────────────────────────────────────────────────────
 import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-# ─── QuantumTrader imports (YOUR code) ─────────────────────────────────────────
-# We use the Python 3.13 install that has the project's deps
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import config
-from signal_engine import SignalEngine
-from technical_analysis import TechnicalAnalyzer
-
-# ─── Configuration ─────────────────────────────────────────────────────────────
+VERSION = "3.2.0"
 MCP_SERVER_URL = "https://mcp-public.hyro.trade/mcp"
 TOKEN_ENV_VAR = "HYRO_AGENT_TOKEN"
+DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
+SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "600"))
 
-# GEMINI.md rules — hardcoded for safety
-MIN_RR = 1.5
-MIN_CONFIDENCE = 60
-MAX_RISK_PCT_CHALLENGE = 1.0   # v2.9: 1% (was 2%) so 3 correlated losses = $300 < $400 daily DD
-MAX_RISK_PCT_FUNDED = 0.5       # max 0.5% on funded accounts (Rule 7)
-MIN_TRADING_DAYS_ONE_STEP = 5   # need 5 qualifying days
-MAX_POSITIONS_PER_ACCOUNT = 3   # Rule 11: hard cap on concurrent positions
-MAX_CORRELATED_POSITIONS = 2    # max 2 positions inside one correlation cluster
-FUNDED_MARGIN_LIMIT_PCT = 25.0  # funded margin limit (% of initial balance, Hyro rule sheet)
-DAILY_DD_SAFETY_BUFFER = 0.5    # v2.10: stop entering when drawdown hits 50% of its limit (stricter)
-MAX_CONSECUTIVE_LOSSES = 3      # v2.10: pause account after N consecutive losing trades
-COOLDOWN_HOURS = 6              # v2.10: cooldown before resuming after a losing streak
-MAX_POSITION_NOTIONAL_PCT = 25.0  # v3.1: cap single-position notional to 25% of equity (gap/slippage protection)
-STALE_ORDER_HOURS = 6             # v3.1: cancel unfilled entry limit orders older than this (hours)
-DRY_RUN = os.getenv("DRY_RUN", "0") == "1"  # v2.9: if "1", scan+validate but never place orders
-VERSION = "3.1.0"  # v3.1: 1R trailing persistence, notional cap, risk-off gate, stale-order cleanup, precision safety
-STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bridge_state.json")
+# ─── Strategy parameters (fixed a-priori family, validated out-of-sample) ─────
+INTERVAL = "240"                 # 4H bars
+BAR_MS = 4 * 3600 * 1000
+KLINE_LIMIT = 600                # EMA200 seed error < 0.3% after 600 bars (validated vs backtest)
+KLINE_FALLBACK = 500             # used if the simulator 503s on the larger request
+DAY_MS = 24 * 3600 * 1000
+DONCHIAN_N = 20
+EMA_TREND = 200
+ATR_N = 14
+STOP_ATR = 3.0
+TRAIL_ATR = 4.5
+REGIME_SMA = 50
+REGIME_BAND = 0.005
 
-# Blacklisted assets (Rule 90-92)
-# NEAR and LINK are blacklisted as BASE assets (e.g., NEARUSDT, LINKUSDT)
-# USDT is the QUOTE currency on Bybit pairs — do NOT blacklist it as a suffix
-# JPY pairs are blacklisted (forex only, not relevant on Hyro but kept for safety)
-BLACKLISTED_BASES = {"NEAR", "LINK"}  # block these coins specifically
-BLACKLISTED_STANDALONE = {"USDT"}  # only block if symbol IS exactly "USDT", not "BTCUSDT"
+# ─── Risk parameters (from the walk-forward prop-firm simulation) ─────────────
+RISK_PCT_EVAL = float(os.getenv("RISK_PCT_EVAL", "0.50"))      # % of initial balance per trade
+RISK_PCT_FUNDED = float(os.getenv("RISK_PCT_FUNDED", "0.50"))  # % of initial balance per trade (GEMINI rule 7)
+MAX_POSITIONS = 3
+MAX_PER_CLUSTER = 2
+OPEN_RISK_DAILY_FRAC = 0.60      # today's DD + open risk + new risk <= 60% of the daily limit
+OPEN_RISK_TOTAL_FRAC = 0.70      # total loss + open risk + new risk <= 70% of the max-loss limit
+GIVEBACK_FRAC = 0.70             # all stops hit => today's DD stays <= 70% of the daily limit
+BRAKE_DAILY_FRAC = 0.75          # flatten everything if today's DD reaches 75% of the daily limit
+MAX_NOTIONAL_PCT = 25.0          # single-position notional cap, % of equity
+MARGIN_USE_FRAC = 0.80           # funded: total initial margin <= 80% of marginLimit
+CPV_USE_FRAC = 0.80              # funded: total notional <= 80% of cpvMultiplier x initial
+MIN_NOTIONAL_PCT_INITIAL = 5.0   # Hyro trading-day rule: notional >= 5% of initial balance
+LOSS_STREAK_N = 6
+LOSS_STREAK_PAUSE_H = 24
+INACTIVITY_WARN_DAYS = 25
+KEEPALIVE_DAYS = 26              # Hyro closes accounts after 30 days without a CLOSED trade
+KEEPALIVE_SYMBOLS = ("XRPUSDT", "DOGEUSDT", "ADAUSDT", "TRXUSDT")
+STALE_ENTRY_MS = 2 * BAR_MS
+SCAN_BUDGET_S = 240              # max seconds of market scanning per account per cycle
+CALL_TIMEOUT_S = 90              # hard timeout per MCP call
 
-# v2.9: Correlation clusters — symbols that move together count as ONE risk unit (Rule 11)
+# Large-cap, liquid perpetuals only (Hyro low-cap rule: < $100M mcap capped at 5% of initial).
+UNIVERSE = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "ADAUSDT", "TRXUSDT",
+    "AVAXUSDT", "LTCUSDT", "BCHUSDT", "DOTUSDT", "XLMUSDT", "HBARUSDT", "SUIUSDT", "ETCUSDT",
+    "AAVEUSDT", "UNIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "FILUSDT", "ATOMUSDT", "INJUSDT",
+    "TIAUSDT", "SEIUSDT", "ENAUSDT", "WLDUSDT", "1000PEPEUSDT", "WIFUSDT", "JUPUSDT",
+]
+BLACKLISTED_BASES = {"NEAR", "LINK"}
 CORRELATION_GROUPS = {
-    "BTC": {"BTCUSDT", "ORDIUSDT", "BCHUSDT", "CETUSDT"},
-    "ETH": {"ETHUSDT", "ARBUSDT", "OPUSDT", "LDOUSDT", "CRVUSDT", "UNIUSDT", "AAVEUSDT", "ENASUSDT"},
-    "SOL": {"SOLUSDT", "JTOUSDT", "PYTHUSDT", "JUPUSDT", "WIFUSDT", "1000SOLUSDT"},
-    "MEME": {"PEPEUSDT", "1000PEPEUSDT", "SHIBUSDT", "1000SHIBUSDT", "DOGEUSDT",
-             "FLOKIUSDT", "1000FLOKIUSDT", "BONKUSDT", "1000BONKUSDT", "MEMEUSDT"},
+    "BTC": {"BTCUSDT", "ORDIUSDT", "BCHUSDT"},
+    "ETH": {"ETHUSDT", "ARBUSDT", "OPUSDT", "UNIUSDT", "AAVEUSDT", "ENAUSDT"},
+    "SOL": {"SOLUSDT", "JUPUSDT", "WIFUSDT"},
+    "MEME": {"1000PEPEUSDT", "DOGEUSDT"},
 }
 
-
-def get_correlation_group(symbol: str) -> str:
-    """Return the correlation cluster for a symbol, or the symbol itself if uncorrelated."""
-    sym = symbol.upper()
-    for group, members in CORRELATION_GROUPS.items():
-        if sym in members:
-            return group
-    return sym
-
-
-# v3.1: Order-precision tables moved to module level (were local to _process_challenge).
-# get_instruments() is UNUSABLE via MCP — it returns every instrument and blows the
-# 1MB SSE limit ("Server-sent event exceeded the 1048576 byte limit"). So these
-# hardcoded Bybit contract specs are the ONLY reliable precision source. Any symbol
-# NOT present here is skipped at order time (never defaulted to a dangerous 0.01 tick).
-QTY_STEPS = {
-    "BTCUSDT": 0.001, "ETHUSDT": 0.01, "SOLUSDT": 0.1, "XRPUSDT": 1,
-    "ADAUSDT": 1, "DOGEUSDT": 10, "AVAXUSDT": 0.1, "LTCUSDT": 0.01,
-    "BNBUSDT": 0.01, "DOTUSDT": 0.1, "ARBUSDT": 0.1, "INJUSDT": 0.1,
-    "SUIUSDT": 0.1, "APTUSDT": 0.1, "PEPEUSDT": 100, "WIFUSDT": 1,
-    "BONKUSDT": 100, "FILUSDT": 0.1, "ATOMUSDT": 0.1, "AAVEUSDT": 0.01,
-    "UNIUSDT": 0.01, "FTMUSDT": 1, "ALGOUSDT": 1, "RNDRUSDT": 0.1,
-    "GALAUSDT": 1, "SANDUSDT": 1, "MANAUSDT": 1, "AXSUSDT": 0.1,
-    "EOSUSDT": 1, "FLOWUSDT": 1, "NEARUSDT": 0.1, "LINKUSDT": 0.1,
-}
-
-TICK_STEPS = {
-    "BTCUSDT": 0.1, "ETHUSDT": 0.01, "SOLUSDT": 0.01, "XRPUSDT": 0.0001,
-    "ADAUSDT": 0.0001, "DOGEUSDT": 0.00001, "AVAXUSDT": 0.001,
-    "LTCUSDT": 0.01, "BNBUSDT": 0.01, "DOTUSDT": 0.001,
-    "ARBUSDT": 0.0001, "INJUSDT": 0.001, "SUIUSDT": 0.0001,
-    "APTUSDT": 0.001, "PEPEUSDT": 0.0000001, "WIFUSDT": 0.0001,
-    "BONKUSDT": 0.0000001, "FILUSDT": 0.01, "ATOMUSDT": 0.001,
-    "AAVEUSDT": 0.01, "UNIUSDT": 0.01, "FTMUSDT": 0.0001,
-    "ALGOUSDT": 0.0001, "RNDRUSDT": 0.001, "GALAUSDT": 0.0001,
-    "SANDUSDT": 0.0001, "MANAUSDT": 0.0001, "AXSUSDT": 0.001,
-    "EOSUSDT": 0.0001, "FLOWUSDT": 0.0001, "NEARUSDT": 0.001,
-    "LINKUSDT": 0.001,
-}
-
-
-def fmt_price(symbol: str, p: float) -> str:
-    """Round a price to the symbol's tick size and format as a decimal string."""
-    tick = TICK_STEPS.get(symbol)
-    if tick is None:
-        raise ValueError(f"no tick size for {symbol}")
-    p_rounded = round(p / tick) * tick
-    if tick >= 1:
-        return f"{p_rounded:.0f}"
-    if tick >= 0.1:
-        return f"{p_rounded:.1f}"
-    if tick >= 0.01:
-        return f"{p_rounded:.2f}"
-    if tick >= 0.001:
-        return f"{p_rounded:.3f}"
-    if tick >= 0.0001:
-        return f"{p_rounded:.4f}"
-    return f"{p_rounded:.6f}"
-
-
-def fmt_qty(symbol: str, q: float) -> str:
-    """Round a quantity to the symbol's qty step and format as a decimal string."""
-    step = QTY_STEPS.get(symbol)
-    if step is None:
-        raise ValueError(f"no qty step for {symbol}")
-    if step >= 1:
-        return f"{q:.0f}"
-    if step >= 0.1:
-        return f"{q:.1f}"
-    if step >= 0.01:
-        return f"{q:.2f}"
-    return f"{q:.3f}"
-
-# Symbols to scan on Hyro (crypto only — HyroTrader is a crypto prop firm)
-# This is the SEED list — the bot also dynamically discovers available symbols
-# by trying to fetch klines for each. If klines come back empty, the symbol
-# is skipped silently. New symbols can be added here and they'll auto-scan.
-HYRO_CRYPTO_SYMBOLS = [
-    # majors (high liquidity — always available)
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "ADAUSDT",
-    "DOGEUSDT", "AVAXUSDT", "LTCUSDT", "BNBUSDT", "DOTUSDT",
-    # mid-caps (confirmed working on Hyro simulator Oct 8, 2026)
-    "ARBUSDT", "INJUSDT", "SUIUSDT", "APTUSDT",
-    # more Bybit perps — auto-skipped if unavailable on simulator
-    "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FILUSDT", "ATOMUSDT",
-    "AAVEUSDT", "UNIUSDT", "FTMUSDT", "ALGOUSDT", "RNDRUSDT",
-    "GALAUSDT", "SANDUSDT", "MANAUSDT", "AXSUSDT", "EOSUSDT",
-    "FLOWUSDT", "SEIUSDT", "TIAUSDT", "JUPUSDT", "PYTHUSDT",
-    "STRTKUSDT", "ENAUSDT", "JTOUSDT", "POLUSDT", "MEMESUSDT",
-    # blacklisted but listed for discovery (GEMINI.md rules will reject)
-    "NEARUSDT", "LINKUSDT",
-]
-
-# Additional discovery symbols — these are tried but may not be available
-# The bot will silently skip any that return no klines
-DISCOVERY_SYMBOLS = [
-    "1000SOLUSDT", "1000XECUSDT", "1000FLOKIUSDT", "1000PEPEUSDT",
-    "1000SHIBUSDT", "1000BONKUSDT", "1000TURBOUSDT", "1000RATSUSDT",
-    "BLURUSDT", "DYDXUSDT", "GMXUSDT", "CRVUSDT", "LDOUSDT",
-    "SHIBUSDT", "TRXUSDT", "ETCUSDT", "BCHUSDT", "ICPUSDT",
-    "HBARUSDT", "VETUSDT", "THETAUSDT", "XLMUSDT", "QNTUSDT",
-    "KASUSDT", "ORDIUSDT", "WLDUSDT", "JTOUSDT", "CETUSDT",
-]
-
-# Symbols already in active trades (skip if already positioned)
-# Will be checked dynamically via list_positions
-
-# ─── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
-        logging.FileHandler(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyro_bridge.log"),
-            encoding="utf-8",
-        ),
+        logging.FileHandler(os.path.join(os.path.dirname(os.path.abspath(__file__)), "hyro_bridge.log"),
+                            encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ],
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 log = logging.getLogger("hyro_bridge")
 
 
-# ─── GEMINI.md Rule Engine ─────────────────────────────────────────────────────
-class GeminiRules:
-    """Enforces all GEMINI.md trading rules on every signal."""
-
-    @staticmethod
-    def is_blacklisted(symbol: str) -> tuple[bool, str]:
-        """Check if a symbol is blacklisted."""
-        sym_upper = symbol.upper()
-        # Block standalone USDT (don't trade USDT as an asset)
-        if sym_upper in BLACKLISTED_STANDALONE:
-            return True, "USDT is a stablecoin, not tradeable (Rule 90-91)"
-        # Block blacklisted base assets (NEARUSDT, LINKUSDT, etc.)
-        for bl in BLACKLISTED_BASES:
-            if sym_upper.startswith(bl):
-                return True, f"Blacklisted base: {bl} (Rule 90-91)"
-        # Block JPY pairs (not on Hyro but safety)
-        if "JPY" in sym_upper:
-            return True, "JPY pair blacklisted (Rule 92)"
-        return False, ""
-
-    @staticmethod
-    def check_rr(rr: float) -> tuple[bool, str]:
-        """Rule 9: Minimum 1:1.5 R:R."""
-        if rr < MIN_RR:
-            return False, f"R:R {rr:.2f} < {MIN_RR} minimum (Rule 9)"
-        return True, ""
-
-    @staticmethod
-    def check_confidence(conf: int) -> tuple[bool, str]:
-        """Minimum confidence filter."""
-        if conf < MIN_CONFIDENCE:
-            return False, f"Confidence {conf}% < {MIN_CONFIDENCE}% minimum"
-        return True, ""
-
-    @staticmethod
-    def check_forex_mean_reversion(symbol: str, strategy: str) -> tuple[bool, str]:
-        """Rule 10: FOREX Mean Reversion auto-reject."""
-        # Hyro is crypto-only, so this shouldn't trigger, but keep for safety
-        if strategy == "Mean Reversion":
-            # On Hyro (crypto), MR is allowed but heavily filtered (Rule 3a/6)
-            # We'll allow it but flag for macro cross-check
-            return True, "Crypto MR allowed but needs macro cross-check (Rule 3a)"
-        return True, ""
-
-    @staticmethod
-    def get_max_risk_pct(account_type: str) -> float:
-        """Get max risk % based on account type."""
-        if "funded" in account_type.lower():
-            return MAX_RISK_PCT_FUNDED
-        return MAX_RISK_PCT_CHALLENGE
-
-    @staticmethod
-    def validate_signal(signal, account_type: str, balance: float) -> tuple[bool, list[str], float]:
-        """
-        Validate a signal against all GEMINI.md rules.
-        Returns: (passes, reasons, risk_usd)
-        """
-        reasons = []
-        passes = True
-        symbol = signal.symbol
-        strategy = signal.strategy
-        rr = signal.risk_reward
-        conf = signal.confidence
-
-        # 1. Blacklist check
-        blocked, reason = GeminiRules.is_blacklisted(symbol)
-        if blocked:
-            return False, [reason], 0.0
-
-        # 2. R:R check
-        ok, reason = GeminiRules.check_rr(rr)
-        if not ok:
-            return False, [reason], 0.0
-
-        # 3. Confidence check
-        ok, reason = GeminiRules.check_confidence(conf)
-        if not ok:
-            return False, [reason], 0.0
-
-        # 4. Forex MR auto-reject (shouldn't apply on Hyro but safety)
-        ok, reason = GeminiRules.check_forex_mean_reversion(symbol, strategy)
-        if not ok:
-            return False, [reason], 0.0
-
-        # 5. Risk sizing
-        max_pct = GeminiRules.get_max_risk_pct(account_type)
-        risk_usd = balance * (max_pct / 100.0)
-
-        return True, reasons, risk_usd
+# ═══ Pure helpers (unit-tested in test_bridge.py) ═════════════════════════════
+def is_blacklisted(symbol: str) -> bool:
+    s = symbol.upper()
+    return s == "USDT" or "JPY" in s or any(s.startswith(b) for b in BLACKLISTED_BASES)
 
 
-# ─── HyroTrader MCP Client ─────────────────────────────────────────────────────
-class HyroMCPClient:
-    """Async client for HyroTrader's MCP server."""
+def correlation_group(symbol: str) -> str:
+    s = symbol.upper()
+    for g, members in CORRELATION_GROUPS.items():
+        if s in members:
+            return g
+    return s
+
+
+def _f(x, default=0.0) -> float:
+    try:
+        v = float(x)
+        return v if math.isfinite(v) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_klines(result) -> list:
+    """Normalise get_klines output to ASCENDING [(start_ms, o, h, l, c, v)].
+    The Hyro tool returns rows NEWEST-FIRST — the v3.1 root-cause bug."""
+    rows = result.get("list") if isinstance(result, dict) else result
+    out = []
+    for r in rows or []:
+        try:
+            if isinstance(r, (list, tuple)) and len(r) >= 6:
+                out.append((int(float(r[0])), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])))
+        except (TypeError, ValueError):
+            continue
+    out.sort(key=lambda k: k[0])
+    dedup = []
+    for k in out:
+        if dedup and dedup[-1][0] == k[0]:
+            dedup[-1] = k
+        else:
+            dedup.append(k)
+    return dedup
+
+
+def closed_only(bars: list, interval_ms: int, now_ms: int) -> list:
+    """Drop the still-forming candle(s): keep bars whose end time has passed."""
+    return [b for b in bars if b[0] + interval_ms <= now_ms]
+
+
+def ema_series(values: list, n: int) -> list:
+    """EMA seeded with the first value (pandas ewm adjust=False). None until n values seen."""
+    out, e, a = [], None, 2.0 / (n + 1.0)
+    for i, v in enumerate(values):
+        e = v if e is None else (v - e) * a + e
+        out.append(e if i >= n - 1 else None)
+    return out
+
+
+def atr_series(bars: list, n: int = ATR_N) -> list:
+    """Wilder ATR (ewm alpha=1/n, seeded with the first true range). None until n bars."""
+    out, a, prev_c = [], None, None
+    for i, (_, _o, h, l, c, _v) in enumerate(bars):
+        tr = h - l if prev_c is None else max(h - l, abs(h - prev_c), abs(l - prev_c))
+        a = tr if a is None else a + (tr - a) / n
+        out.append(a if i >= n - 1 else None)
+        prev_c = c
+    return out
+
+
+def market_regime(daily_bars: list) -> str:
+    """BTC regime from CLOSED daily bars (ascending): risk-on / range / risk-off."""
+    closes = [b[4] for b in daily_bars]
+    if len(closes) < REGIME_SMA:
+        return "unknown"
+    sma = sum(closes[-REGIME_SMA:]) / REGIME_SMA
+    last = closes[-1]
+    if last < sma * (1 - REGIME_BAND):
+        return "risk-off"
+    if last > sma * (1 + REGIME_BAND):
+        return "risk-on"
+    return "range"
+
+
+def breakout_signal(bars: list):
+    """Evaluate the LAST closed bar. Returns dict(score, atr, close, bar_ts) or None."""
+    if len(bars) < max(EMA_TREND, DONCHIAN_N + ATR_N) + 5:
+        return None
+    closes = [b[4] for b in bars]
+    e200 = ema_series(closes, EMA_TREND)[-1]
+    atr = atr_series(bars)[-1]
+    if e200 is None or atr is None or atr <= 0:
+        return None
+    last = bars[-1]
+    prior_high = max(b[2] for b in bars[-DONCHIAN_N - 1:-1])
+    close = last[4]
+    if close > prior_high and close > e200:
+        return {"score": (close - e200) / atr, "atr": atr, "close": close, "bar_ts": last[0]}
+    return None
+
+
+def chandelier_stop(bars_since_entry: list, atr: float, side: str) -> float:
+    if not bars_since_entry or atr <= 0:
+        return 0.0
+    if side == "Buy":
+        return max(b[2] for b in bars_since_entry) - TRAIL_ATR * atr
+    return min(b[3] for b in bars_since_entry) + TRAIL_ATR * atr
+
+
+def tighten_only(side: str, current_sl: float, candidate: float, mark: float) -> bool:
+    """True if candidate is a strictly tighter, valid stop (never loosen, never cross price)."""
+    if candidate <= 0:
+        return False
+    if side == "Buy":
+        return candidate > current_sl and candidate < mark
+    return (current_sl <= 0 or candidate < current_sl) and candidate > mark
+
+
+def _dec(x) -> Decimal:
+    return Decimal(str(x))
+
+
+def round_step(value: float, step: str, mode=ROUND_DOWN) -> Decimal:
+    st = _dec(step)
+    return ((_dec(value) / st).to_integral_value(rounding=mode) * st).quantize(st)
+
+
+def round_price(value: float, tick: str, mode=ROUND_HALF_UP) -> str:
+    return format(round_step(value, tick, mode), "f")
+
+
+def size_position(risk_usd: float, entry: float, stop: float, equity: float, instr: dict):
+    """Risk-based qty, capped by notional, rounded DOWN to qtyStep. Returns (qty_str, notional) or (None, reason)."""
+    dist = abs(entry - stop)
+    if dist <= 0 or entry <= 0:
+        return None, "zero stop distance"
+    qty = risk_usd / dist
+    cap = equity * MAX_NOTIONAL_PCT / 100.0
+    if qty * entry > cap:
+        qty = cap / entry
+    q = round_step(qty, instr["qtyStep"], ROUND_DOWN)
+    if q < _dec(instr["minOrderQty"]):
+        return None, f"qty {q} < minOrderQty {instr['minOrderQty']}"
+    notional = float(q) * entry
+    if notional < float(instr.get("minNotionalValue", 5) or 5):
+        return None, f"notional ${notional:.2f} < venue minimum"
+    return format(q, "f"), notional
+
+
+def risk_scale(loss_tot: float, loss_lim: float) -> float:
+    """Shrink risk as total loss grows (anti-martingale), floored at 50% of base risk."""
+    if loss_lim <= 0:
+        return 1.0
+    return max(0.5, 1.0 - max(0.0, loss_tot) / loss_lim)
+
+
+def order_link_id(symbol: str, bar_ts: int) -> str:
+    """Stable idempotency key per (symbol, signal bar): a retry can never double-fill."""
+    base = symbol.replace("USDT", "")[:16]
+    return f"qt32-{base}-{int(bar_ts) // 1000}"[:36]
+
+
+def consecutive_losses(trades: list) -> tuple:
+    rows = [t for t in trades if isinstance(t, dict) and not t.get("invalidated", False)]
+    rows.sort(key=lambda t: str(t.get("timestamp", "")), reverse=True)
+    n, last_ts = 0, None
+    for t in rows:
+        if _f(t.get("netPnl")) < 0:
+            n += 1
+            last_ts = last_ts or t.get("timestamp")
+        else:
+            break
+    return n, last_ts
+
+
+def parse_iso(ts) -> float:
+    try:
+        txt = re.sub(r"(\.\d{6})\d+", r"\1", str(ts)).replace("Z", "+00:00")
+        return datetime.fromisoformat(txt).timestamp()
+    except Exception:
+        return 0.0
+
+
+# ═══ MCP client ═══════════════════════════════════════════════════════════════
+class MCPError(Exception):
+    pass
+
+
+class HyroMCP:
+    """One persistent MCP session per scan cycle; retries 429/503 with back-off."""
 
     def __init__(self, token: str):
         self.token = token
-        self.headers = {"Authorization": f"Bearer {token}"}
+        self._http = None
+        self._cm = None
+        self._scm = None
+        self.session = None
+        self.calls = 0
 
-    async def _run(self, coro):
-        """Run an MCP session operation with rate-limit-aware delays."""
-        client = httpx2.AsyncClient(
-            headers=self.headers,
-            verify=False,  # Avoid truststore recursion on Windows
-            timeout=30.0,
-        )
-        try:
-            async with streamable_http_client(MCP_SERVER_URL, http_client=client) as (read, write):
-                async with ClientSession(read, write) as session:
-                    return await coro(session)
-        finally:
-            await client.aclose()
-            # Small delay between API calls to avoid 429 rate limits
-            await asyncio.sleep(0.5)
+    async def __aenter__(self):
+        # verify=False: httpx2's truststore hits a RecursionError on Windows (documented project
+        # workaround); on Render (Linux) this is the same TLS endpoint behind a public CA.
+        self._http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {self.token}"},
+                                        verify=False, timeout=60.0)
+        self._cm = streamable_http_client(MCP_SERVER_URL, http_client=self._http)
+        read, write = await self._cm.__aenter__()
+        self._scm = ClientSession(read, write)
+        self.session = await self._scm.__aenter__()
+        await self.session.initialize()
+        return self
 
-    async def list_tools(self) -> list[dict]:
-        """List all available MCP tools."""
-        async def _inner(session):
-            tools = await session.list_tools()
-            return [{"name": t.name, "description": t.description} for t in tools.tools]
-        return await self._run(_inner)
-
-    async def call_tool(self, name: str, arguments: dict = None) -> dict:
-        """Call an MCP tool by name with arguments."""
-        async def _inner(session):
-            result = await session.call_tool(name, arguments or {})
-            # Parse the content blocks
-            output = []
-            for block in result.content:
-                if hasattr(block, "text"):
-                    output.append(block.text)
-            raw = "\n".join(output)
+    async def __aexit__(self, *exc):
+        for cm in (self._scm, self._cm):
             try:
-                return json.loads(raw) if raw.strip().startswith("{") or raw.strip().startswith("[") else {"raw": raw}
-            except json.JSONDecodeError:
-                return {"raw": raw}
-        return await self._run(_inner)
-
-    # ─── High-level helpers ─────────────────────────────────────────────────────
-
-    @staticmethod
-    def _is_error(result) -> bool:
-        """Detect error/rate-limit responses wrapped as {'raw': '...'}."""
-        if isinstance(result, dict):
-            raw = result.get("raw", "")
-            if isinstance(raw, str):
-                rl = raw.lower()
-                if "error" in rl or "rate-limit" in rl or "retry" in rl or "no longer active" in rl or "not found" in rl:
-                    return True
-        return False
-
-    async def list_challenges(self) -> list[dict]:
-        """List all ongoing challenges."""
-        result = await self.call_tool("list_challenges", {})
-        if isinstance(result, dict):
-            # May be pagated — look for challenges list
-            if "challenges" in result:
-                return result["challenges"]
-            elif "data" in result:
-                return result["data"]
-        if isinstance(result, list):
-            return result
-        return [result] if result else []
-
-    async def get_challenge(self, challenge_id: str) -> dict:
-        """Get full details for one challenge."""
-        return await self.call_tool("get_challenge", {"challengePublicId": challenge_id})
-
-    async def get_stage_metrics(self, stage_id: str) -> dict:
-        """Get drawdown/rule-budget metrics for a stage."""
-        return await self.call_tool("get_stage_metrics", {"stagePublicId": stage_id})
-
-    async def get_stage_trades(self, stage_id: str) -> dict:
-        """Get closed trade history for a stage."""
-        return await self.call_tool("get_stage_trades", {"stagePublicId": stage_id})
-
-    async def get_klines(self, challenge_id: str, symbol: str, interval: str = "240", limit: int = 100) -> list[dict]:
-        """
-        Get OHLCV candles from the challenge's simulator.
-        interval: "60" = 1H, "240" = 4H, "D" = daily
-        Returns list of [timestamp, open, high, low, close, volume, turnover]
-        """
-        result = await self.call_tool("get_klines", {
-            "challengePublicId": challenge_id,
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit,
-        })
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            for key in ("klines", "data", "list"):
-                if key in result:
-                    return result[key]
-            # Maybe the raw response IS the list
-            if "category" in result:
-                return result.get("list", [])
-        return []
-
-    async def get_tickers(self, challenge_id: str, symbol: str = None) -> dict:
-        """Get latest prices from the simulator."""
-        args = {"challengePublicId": challenge_id}
-        if symbol:
-            args["symbol"] = symbol
-        return await self.call_tool("get_tickers", args)
-
-    async def get_instruments(self, challenge_id: str) -> list[dict]:
-        """Get tradeable instruments with contract rules."""
-        result = await self.call_tool("get_instruments", {"challengePublicId": challenge_id})
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            for key in ("instruments", "data", "list"):
-                if key in result:
-                    return result[key]
-        return [result] if result else []
-
-    async def get_wallet_balance(self, challenge_id: str) -> dict:
-        """Get wallet balance, equity, available margin."""
-        return await self.call_tool("get_wallet_balance", {"challengePublicId": challenge_id})
-
-    async def list_positions(self, challenge_id: str):
-        """List open positions. Returns None on error (fail-safe signal)."""
-        result = await self.call_tool("list_positions", {"challengePublicId": challenge_id})
-        if self._is_error(result):
-            return None
-        if isinstance(result, dict):
-            for key in ("positions", "list", "data"):
-                if key in result:
-                    result = result[key]
-                    break
-        if isinstance(result, list):
-            return [p for p in result if isinstance(p, dict)]
-        return None
-
-    async def list_open_orders(self, challenge_id: str, symbol: str = None) -> list[dict]:
-        """List pending/open orders."""
-        args = {"challengePublicId": challenge_id}
-        if symbol:
-            args["symbol"] = symbol
-        result = await self.call_tool("list_open_orders", args)
-        if isinstance(result, dict):
-            for key in ("orders", "list", "data"):
-                if key in result:
-                    return result[key]
-        if isinstance(result, list):
-            return result
-        return [result] if result else []
-
-    async def preview_order(self, challenge_id: str, symbol: str, side: str,
-                            order_type: str, qty: str, price: str = None,
-                            take_profit: str = None, stop_loss: str = None) -> dict:
-        """Dry-run an order to check if it would be accepted."""
-        args = {
-            "challengePublicId": challenge_id,
-            "symbol": symbol,
-            "side": side,  # "Buy" or "Sell"
-            "orderType": order_type,  # "Market" or "Limit"
-            "qty": qty,
-        }
-        if price:
-            args["price"] = price
-        if take_profit:
-            args["takeProfit"] = take_profit
-        if stop_loss:
-            args["stopLoss"] = stop_loss
-        return await self.call_tool("preview_order", args)
-
-    async def place_order(self, challenge_id: str, symbol: str, side: str,
-                          order_type: str, qty: str, price: str = None,
-                          take_profit: str = None, stop_loss: str = None,
-                          reduce_only: bool = False) -> dict:
-        """Place a real order on the simulator."""
-        args = {
-            "challengePublicId": challenge_id,
-            "symbol": symbol,
-            "side": side,  # "Buy" or "Sell"
-            "orderType": order_type,  # "Market" or "Limit"
-            "qty": qty,
-        }
-        if price:
-            args["price"] = price
-        if take_profit:
-            args["takeProfit"] = take_profit
-        if stop_loss:
-            args["stopLoss"] = stop_loss
-        if reduce_only:
-            args["reduceOnly"] = True
-        return await self.call_tool("place_order", args)
-
-    async def close_position(self, challenge_id: str, symbol: str) -> dict:
-        """Close the open position on a symbol."""
-        return await self.call_tool("close_position", {
-            "challengePublicId": challenge_id,
-            "symbol": symbol,
-        })
-
-    async def cancel_order(self, challenge_id: str, order_id: str) -> dict:
-        """Cancel one order."""
-        return await self.call_tool("cancel_order", {
-            "challengePublicId": challenge_id,
-            "orderId": order_id,
-        })
-
-    async def cancel_all_orders(self, challenge_id: str, symbol: str = None) -> dict:
-        """Cancel all open orders."""
-        args = {"challengePublicId": challenge_id}
-        if symbol:
-            args["symbol"] = symbol
-        return await self.call_tool("cancel_all_orders", args)
-
-    async def set_trading_stop(self, challenge_id: str, symbol: str,
-                               take_profit: str = None, stop_loss: str = None) -> dict:
-        """Set or change TP/SL on an open position."""
-        args = {"challengePublicId": challenge_id, "symbol": symbol}
-        if take_profit:
-            args["takeProfit"] = take_profit
-        if stop_loss:
-            args["stopLoss"] = stop_loss
-        return await self.call_tool("set_trading_stop", args)
-
-
-# ─── Bridge Orchestrator ───────────────────────────────────────────────────────
-class HyroBridge:
-    """Main bridge orchestrator that ties signal engine to HyroTrader."""
-
-    def __init__(self, token: str):
-        self.client = HyroMCPClient(token)
-        self.engine = SignalEngine(TechnicalAnalyzer())
-        self.state = self._load_state()
-
-    # ─── Persistent state (bridge_state.json) ──────────────────────────────
-    def _load_state(self) -> dict:
+                if cm is not None:
+                    await cm.__aexit__(None, None, None)
+            except Exception:
+                pass
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            await self._http.aclose()
         except Exception:
-            return {}
-
-    def _save_state(self) -> None:
-        try:
-            with open(STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.state, f, indent=2)
-        except Exception as e:
-            log.debug("Could not save state: %s", e)
+            pass
 
     @staticmethod
-    def _is_account_frozen(ch_id: str) -> bool:
-        """
-        v2.8: Check if an account is frozen (payout in progress).
-        Reads the FROZEN_ACCOUNTS environment variable (comma-separated challenge IDs).
-        Returns True if the account should be skipped.
-        """
-        frozen_raw = os.getenv("FROZEN_ACCOUNTS", "").strip()
-        if not frozen_raw:
-            return False
-        # Parse comma-separated list, strip whitespace, ignore empty
-        frozen_ids = [fid.strip() for fid in frozen_raw.split(",") if fid.strip()]
-        return ch_id in frozen_ids
-
-    async def _get_market_regime(self, ch_id: str) -> str:
-        """
-        v3.1: Global risk-appetite gate using BTC as the crypto bellwether.
-        BTC leads liquidity cascades across the whole market: when BTC is in a
-        strong downtrend, even altcoins with bullish setups get liquidated in
-        the flush (the exact failure mode that stopped out 8 of 9 trades).
-        Returns 'risk-on', 'risk-off', or 'range' from BTC's daily 50-EMA.
-        """
+    def _extract(result):
+        sc = getattr(result, "structuredContent", None) or getattr(result, "structured_content", None)
+        if sc:
+            return sc
+        text = "\n".join(getattr(c, "text", "") or "" for c in (getattr(result, "content", None) or []))
         try:
-            klines = await self.client.get_klines(ch_id, "BTCUSDT", interval="D", limit=60)
-            if not klines or len(klines) < 50:
-                return "range"
-            closes = []
-            for k in klines:
-                if isinstance(k, (list, tuple)) and len(k) >= 5:
-                    closes.append(float(k[4]))
-                elif isinstance(k, dict):
-                    closes.append(float(k.get("close", k.get("c", 0))))
-            closes = [c for c in closes if c > 0]
-            if len(closes) < 50:
-                return "range"
-            ema50 = sum(closes[-50:]) / 50.0
-            last = closes[-1]
-            if last < ema50 * 0.995:
-                return "risk-off"
-            if last > ema50 * 1.005:
-                return "risk-on"
-            return "range"
-        except Exception as e:
-            log.debug("Regime check failed: %s", e)
-            return "range"
+            return json.loads(text)
+        except Exception:
+            return text
 
-    async def _cancel_stale_entry_orders(self, ch_id: str):
-        """
-        v3.1: Cancel unfilled ENTRY limit orders older than STALE_ORDER_HOURS.
-        TP/SL protective legs (reduceOnly=True) are never touched. Prevents
-        dead limit orders from accumulating notional and filling days later
-        at a stale price.
-        """
-        try:
-            orders = await self.client.list_open_orders(ch_id)
-        except Exception as e:
-            log.debug("Could not list open orders for %s: %s", ch_id, e)
-            return
-        if not isinstance(orders, list):
-            return
-        now_ms = time.time() * 1000.0
-        stale_ms = STALE_ORDER_HOURS * 3600.0 * 1000.0
-        for o in orders:
-            if not isinstance(o, dict):
-                continue
-            if o.get("reduceOnly") is True:
-                continue  # TP/SL leg — leave it
-            if str(o.get("orderType", "")).lower() != "limit":
-                continue  # only entry limits we placed
-            raw_created = o.get("createdTime") or o.get("updatedTime")
-            if not raw_created:
-                continue
+    async def call(self, name: str, args: dict, retries: int = 5):
+        last = None
+        for attempt in range(retries):
+            self.calls += 1
             try:
-                created = float(raw_created)
-            except (TypeError, ValueError):
+                r = await asyncio.wait_for(self.session.call_tool(name, args), timeout=CALL_TIMEOUT_S)
+            except Exception as e:  # transport hiccup
+                last = f"transport: {e}"
+                await asyncio.sleep(3 + 2 * attempt)
                 continue
-            if created <= 0:
-                continue
-            age_ms = now_ms - created
-            if age_ms > stale_ms:
-                oid = o.get("orderId") or o.get("orderLinkId")
-                if not oid:
+            d = self._extract(r)
+            if isinstance(d, str):
+                low = d.lower()
+                if "429" in d or "rate-limit" in low:
+                    m = re.search(r"retry after (\d+)s", low)
+                    await asyncio.sleep((int(m.group(1)) + 2) if m else 20)
+                    last = d
                     continue
-                sym = o.get("symbol", "?")
-                log.info("  🧹 Cancelling stale entry limit %s %s (age %.1fh)",
-                         sym, oid, age_ms / 3600000.0)
+                if "503" in d or "http request failed" in low:
+                    await asyncio.sleep(3 + 2 * attempt)
+                    last = d
+                    continue
+                if getattr(r, "isError", False) or getattr(r, "is_error", False) or "error" in low:
+                    raise MCPError(d[:300])
+            await asyncio.sleep(0.35)
+            return d
+        raise MCPError(f"{name} failed after {retries} tries: {str(last)[:200]}")
+
+
+# ═══ Bridge ═══════════════════════════════════════════════════════════════════
+class HyroBridge:
+    def __init__(self, token: str):
+        self.token = token
+        self.instruments = {}      # symbol -> {tickSize, qtyStep, minOrderQty, minNotionalValue}
+        self.cache = {}            # (symbol, interval) -> ascending bars (shared by all accounts)
+        self.fetched_at = {}       # (symbol, interval) -> unix time of last refresh
+        self.scanned = {}          # (challenge, bar_ts) -> symbols already evaluated for that bar
+
+    # ── data ──────────────────────────────────────────────────────────────
+    async def _klines(self, mcp, ch, symbol, interval, limit):
+        raw = await mcp.call("get_klines", {"challengePublicId": ch, "symbol": symbol,
+                                            "interval": interval, "limit": limit}, retries=3)
+        rows = parse_klines(raw)
+        if not rows:
+            raise MCPError(f"empty klines for {symbol}")
+        return rows
+
+    async def bars(self, mcp, ch, symbol, interval=INTERVAL, limit=KLINE_LIMIT):
+        """Closed bars (ascending). Full history is downloaded once, then only the newest bars."""
+        key, ms = (symbol, interval), (BAR_MS if interval == INTERVAL else DAY_MS)
+        have = self.cache.get(key)
+        if not have or time.time() - self.fetched_at.get(key, 0) > 45:
+            if have and len(have) >= min(limit, KLINE_FALLBACK):
+                new = await self._klines(mcp, ch, symbol, interval, 10)
+                if new[0][0] - have[-1][0] > ms:      # gap (outage) -> rebuild from scratch
+                    have = None
+                else:
+                    have = [b for b in have if b[0] < new[0][0]] + new
+            if not have:
                 try:
-                    await self.client.cancel_order(ch_id, oid)
-                except Exception as e:
-                    log.warning("  Could not cancel %s: %s", oid, e)
+                    have = await self._klines(mcp, ch, symbol, interval, limit)
+                except MCPError:
+                    if limit <= KLINE_FALLBACK:
+                        raise
+                    have = await self._klines(mcp, ch, symbol, interval, KLINE_FALLBACK)
+            self.cache[key] = have[-max(limit, KLINE_LIMIT):]
+            self.fetched_at[key] = time.time()
+        return closed_only(self.cache[key], ms, int(time.time() * 1000))[-limit:]
 
-    async def run_scan_cycle(self):
-        """One complete scan-and-trade cycle."""
+    async def instrument(self, mcp, ch, symbol):
+        if symbol in self.instruments:
+            return self.instruments[symbol]
+        d = await mcp.call("get_instruments", {"challengePublicId": ch, "symbol": symbol})
+        rows = d.get("list") if isinstance(d, dict) else None
+        if not rows:
+            raise MCPError(f"no instrument spec for {symbol}")
+        it = rows[0]
+        if it.get("status") != "Trading":
+            raise MCPError(f"{symbol} status {it.get('status')}")
+        spec = {"tickSize": it["priceFilter"]["tickSize"], "qtyStep": it["lotSizeFilter"]["qtyStep"],
+                "minOrderQty": it["lotSizeFilter"]["minOrderQty"],
+                "minNotionalValue": it["lotSizeFilter"].get("minNotionalValue", "5")}
+        self.instruments[symbol] = spec
+        return spec
+
+    # ── cycle ─────────────────────────────────────────────────────────────
+    async def run_cycle(self):
         log.info("=" * 70)
-        log.info("SCAN CYCLE START — %s", datetime.now(timezone.utc).isoformat())
-        log.info("=" * 70)
-
-        # Step 1: Get all challenges
-        try:
-            challenges = await self.client.list_challenges()
-        except Exception as e:
-            log.error("Failed to list challenges: %s", e)
-            return
-
-        if not challenges:
-            log.warning("No challenges returned. Check token or account status.")
-            return
-
-        log.info("Found %d challenge(s)", len(challenges))
-
-        for ch in challenges:
-            try:
-                await self._process_challenge(ch)
-                # Delay between challenges to avoid 429
-                await asyncio.sleep(2)
-            except Exception as e:
-                log.error("Error processing challenge: %s", e, exc_info=True)
-
-        # Log performance summary after all challenges processed
-        await self._log_performance_summary()
-
-        log.info("SCAN CYCLE COMPLETE — %s", datetime.now(timezone.utc).isoformat())
-        log.info("=" * 70)
-
-    async def _log_performance_summary(self):
-        """Log a performance summary across all challenges."""
-        try:
-            challenges = await self.client.list_challenges()
-            if not challenges:
-                return
-
-            total_equity = 0.0
-            total_realized_pnl = 0.0
-            total_open_positions = 0
-            active_accounts = 0
-
-            for ch in challenges:
-                if not isinstance(ch, dict):
+        log.info("SCAN CYCLE START v%s %s%s", VERSION, datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                 " [DRY RUN]" if DRY_RUN else "")
+        async with HyroMCP(self.token) as mcp:
+            data = await mcp.call("list_challenges", {})
+            chs = data.get("data", data) if isinstance(data, dict) else data
+            frozen = {x.strip() for x in os.getenv("FROZEN_ACCOUNTS", "").split(",") if x.strip()}
+            active = []
+            for ch in chs or []:
+                if not isinstance(ch, dict) or str(ch.get("status", "")).lower() != "active":
                     continue
-                status = ch.get("status", "")
-                if status.lower() not in ("active", "ongoing", "in_progress"):
+                cid = ch.get("publicId")
+                if cid in frozen:
+                    log.info("[%s] FROZEN (payout in progress) — skipped", cid)
                     continue
-
-                ch_id = ch.get("publicId") or ch.get("id", "")
-                if not ch_id:
-                    continue
-
-                active_accounts += 1
-
-                # Get metrics
-                details = await self.client.get_challenge(ch_id)
-                if isinstance(details, dict):
-                    stage = details.get("currentStage", {})
-                    if isinstance(stage, dict):
-                        stage_id = stage.get("publicId", "")
-                        if stage_id:
-                            metrics = await self.client.get_stage_metrics(stage_id)
-                            if isinstance(metrics, dict):
-                                eq_m = metrics.get("equityMetrics", {})
-                                if isinstance(eq_m, dict):
-                                    total_equity += float(eq_m.get("equity", 0))
-                                tm = metrics.get("tradeMetrics", {})
-                                if isinstance(tm, dict):
-                                    total_realized_pnl += float(tm.get("longRealizedPnl", 0)) + float(tm.get("shortRealizedPnl", 0))
-
-                # Count open positions
-                positions = await self.client.list_positions(ch_id)
-                if positions:
-                    total_open_positions += len(positions)
-
-            log.info("=" * 70)
-            log.info("  📊 PERFORMANCE SUMMARY")
-            log.info("  Active accounts: %d | Open positions: %d", active_accounts, total_open_positions)
-            log.info("  Total equity: $%.2f | Total realized P&L: $%.2f", total_equity, total_realized_pnl)
-            if total_realized_pnl != 0:
-                log.info("  Net return: %.2f%%", (total_realized_pnl / max(total_equity, 1)) * 100)
-            log.info("=" * 70)
-        except Exception as e:
-            log.debug("Performance summary error: %s", e)
-
-    async def _process_challenge(self, challenge: dict):
-        """Process a single challenge: check rules, scan signals, place trades."""
-        # Extract challenge info — the MCP response format may vary
-        ch_id = challenge.get("publicId") or challenge.get("id") or challenge.get("challengeId", "")
-        if not ch_id:
-            log.warning("Could not extract challenge ID from: %s", list(challenge.keys()))
-            return
-
-        status = challenge.get("status", "")
-        if status.lower() not in ("ongoing", "active", "in_progress"):
-            log.info("Challenge %s: status=%s — skipping", ch_id, status)
-            return
-
-        # v2.8: Check if this account is frozen (payout in progress)
-        if self._is_account_frozen(ch_id):
-            log.info("🧊 Account %s is FROZEN — skipping (payout in progress)", ch_id)
-            return
-
-        # Get full challenge details (stage ID is separate from challenge ID)
-        details = await self.client.get_challenge(ch_id)
-        log.info("Challenge %s details: %s", ch_id, json.dumps(details, indent=2)[:500])
-
-        # Extract stage info
-        stage = None
-        if isinstance(details, dict):
-            stage = details.get("currentStage") or details.get("stage")
-            if not stage and "data" in details:
-                stage = details["data"].get("currentStage") or details["data"].get("stage")
-
-        if not stage:
-            log.warning("Challenge %s: could not find stage info", ch_id)
-            return
-
-        stage_id = stage.get("publicId") or stage.get("id") or stage.get("stageId", "")
-        if not stage_id:
-            log.warning("Challenge %s: could not extract stage ID", ch_id)
-            return
-
-        account_type = stage.get("type", "")
-        is_funded = "funded" in account_type.lower() or stage.get("isFunded", False)
-
-        # Step 2: Get stage metrics (THE rule-budget tool)
-        metrics = await self.client.get_stage_metrics(stage_id)
-        if self.client._is_error(metrics):
-            log.warning("Challenge %s: could not read stage metrics (rate-limit/error) — skipping (fail-safe)", ch_id)
-            return
-        log.info("Challenge %s metrics: %s", ch_id, json.dumps(metrics, indent=2)[:800])
-
-        # Check if challenge is halted
-        equity_metrics = None
-        if isinstance(metrics, dict):
-            equity_metrics = metrics.get("equityMetrics") or metrics.get("equity", {})
-
-        halted = False
-        if isinstance(metrics, dict) and metrics.get("halted"):
-            halted = True
-            log.warning("Challenge %s is HALTED — only closing allowed", ch_id)
-
-        if halted:
-            # Don't open new trades on halted challenges
-            return
-
-        # Get wallet balance — the API returns a nested structure
-        wallet = await self.client.get_wallet_balance(ch_id)
-        balance = 0.0
-        if isinstance(wallet, dict):
-            # Response: {"list": [{"accountType": "UNIFIED", "coin": [{"coin": "USDT", "equity": "9908.07", ...}]}]}
-            coin_list = wallet.get("list", [])
-            if coin_list and isinstance(coin_list, list):
-                for account in coin_list:
-                    if isinstance(account, dict):
-                        coins = account.get("coin", [])
-                        if coins and isinstance(coins, list):
-                            for c in coins:
-                                if isinstance(c, dict) and c.get("coin") == "USDT":
-                                    balance = float(c.get("equity") or c.get("walletBalance") or 0)
-                                    break
-            # Fallback: also check the stage equity from metrics
-            if balance == 0 and isinstance(metrics, dict):
-                eq_metrics = metrics.get("equityMetrics", {})
-                if isinstance(eq_metrics, dict):
-                    balance = float(eq_metrics.get("equity") or eq_metrics.get("balance") or 0)
-            if balance == 0:
-                balance = float(wallet.get("equity") or wallet.get("balance") or wallet.get("availableMargin") or 0)
-        # Final fallback: use stage equity directly
-        if balance == 0 and isinstance(metrics, dict):
-            eq_metrics = metrics.get("equityMetrics", {})
-            if isinstance(eq_metrics, dict):
-                balance = float(eq_metrics.get("equity") or 0)
-        # If still 0 but we have initialBalance from challenge, use that
-        if balance == 0:
-            init_bal = details.get("initialBalance", 0) if isinstance(details, dict) else 0
-            stage_equity = stage.get("equity", 0) if isinstance(stage, dict) else 0
-            balance = float(stage_equity or init_bal or 0)
-        log.info("Challenge %s: balance=$%.2f, type=%s, funded=%s", ch_id, balance, account_type, is_funded)
-
-        # v2.9: Extract rule budgets (daily DD, total loss, margin limit) from stage rules
-        rules = {}
-        if isinstance(stage, dict):
-            rules = stage.get("rules", {}) or {}
-        drawdown_limit = float(rules.get("drawdownLimit", 0) or 0)
-        equity_loss_limit = float(rules.get("equityLossLimit", 0) or 0)
-        margin_limit_pct = FUNDED_MARGIN_LIMIT_PCT if is_funded else 0.0
-        rule_sheet = stage.get("ruleSheet", []) if isinstance(stage, dict) else []
-        if isinstance(rule_sheet, list):
-            for _rs in rule_sheet:
-                if isinstance(_rs, dict) and _rs.get("key") == "marginLimit":
+                active.append(cid)
+            # pass 1 protects every account (stops, brake, housekeeping) before any slow market scan
+            for scan in (False, True):
+                for cid in active:
                     try:
-                        margin_limit_pct = float(_rs.get("value", margin_limit_pct))
-                    except (TypeError, ValueError):
-                        pass
-        initial_balance = float(details.get("initialBalance", balance) or balance) if isinstance(details, dict) else balance
-        margin_limit = initial_balance * (margin_limit_pct / 100.0) if margin_limit_pct > 0 else 0.0
+                        await self.process(mcp, cid, scan=scan)
+                    except MCPError as e:
+                        log.warning("[%s] %s pass skipped (fail-safe): %s", cid, "scan" if scan else "manage", e)
+                    except Exception as e:
+                        log.error("[%s] unexpected error: %s", cid, e, exc_info=True)
+            log.info("SCAN CYCLE END — %d MCP calls", mcp.calls)
 
-        current_drawdown = 0.0
-        current_loss = 0.0
-        if isinstance(metrics, dict):
-            _em = metrics.get("equityMetrics") or {}
-            if isinstance(_em, dict):
-                current_drawdown = float(_em.get("currentDrawdown", 0) or 0)
-                current_loss = float(_em.get("currentLoss", 0) or 0)
-        log.info("  Rule budget: DD $%.2f/$%.2f | Loss $%.2f/$%.2f | Margin limit $%.2f",
-                 current_drawdown, drawdown_limit, current_loss, equity_loss_limit, margin_limit)
-
-        if balance <= 0:
-            log.warning("Challenge %s: zero balance — skipping", ch_id)
+    async def process(self, mcp, ch, scan=True):
+        det = await mcp.call("get_challenge", {"challengePublicId": ch})
+        stage = det.get("currentStage") or {}
+        stage_id = stage.get("publicId")
+        if not stage_id or str(stage.get("status", "")).lower() != "active":
+            log.info("[%s] stage not active — skipped", ch)
             return
+        funded = str(stage.get("type", "")).lower() == "funded"
+        init = _f(det.get("initialBalance"))
+        rules = stage.get("rules") or {}
+        daily_lim = _f(rules.get("drawdownLimit"), 0.04 * init)
+        loss_lim = _f(rules.get("equityLossLimit"), 0.06 * init)
+        sheet = {r.get("key"): r.get("value") for r in stage.get("ruleSheet") or [] if isinstance(r, dict)}
+        margin_lim = init * _f(sheet.get("marginLimit"), 0) / 100.0
+        cpv_lim = init * _f(sheet.get("cpvMultiplier"), 0)
+        progress = stage.get("progress") or {}
 
-        # Step 3: Check existing positions and manage them (trailing stops, PnL logging)
-        positions = await self.client.list_positions(ch_id)
-        if positions is None:
-            log.warning("Challenge %s: could not read positions (rate-limit/error) — skipping (fail-safe)", ch_id)
-            return
-        existing_symbols = set()
-        if positions:
-            for pos in positions:
-                if isinstance(pos, dict):
-                    sym = pos.get("symbol", "")
-                    if sym:
-                        existing_symbols.add(sym)
-                        pnl = pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", "N/A")))
-                        log.info("  Open position: %s %s | PnL: %s", sym, pos.get("side", ""), pnl)
+        met = await mcp.call("get_stage_metrics", {"stagePublicId": stage_id})
+        em = met.get("equityMetrics") if isinstance(met, dict) else None
+        if not isinstance(em, dict):
+            raise MCPError("no equityMetrics")
+        equity, balance = _f(em.get("equity")), _f(em.get("balance"))
+        dd_today, loss_tot = _f(em.get("currentDrawdown")), _f(em.get("currentLoss"))
+        cushion = equity - _f(em.get("drawdownPivot"), equity + dd_today)   # vs 00:00 UTC equity
+        pos_meta = {p.get("symbol"): p for p in (met.get("positions") or []) if isinstance(p, dict)}
 
-        # v2.9: Compute existing margin exposure and correlation counts
-        existing_margin = 0.0
-        correlation_counts = {}
-        for _pos in (positions or []):
-            if not isinstance(_pos, dict):
-                continue
-            _sym = _pos.get("symbol", "")
-            existing_margin += float(_pos.get("positionIM", _pos.get("positionValue", 0)) or 0)
-            if _sym:
-                _grp = get_correlation_group(_sym)
-                correlation_counts[_grp] = correlation_counts.get(_grp, 0) + 1
-        if margin_limit > 0 and existing_margin > margin_limit:
-            log.warning("  ⚠️ MARGIN BREACH: existing margin $%.2f > limit $%.2f — will NOT add positions",
-                        existing_margin, margin_limit)
+        pr = await mcp.call("list_positions", {"challengePublicId": ch})
+        positions = [p for p in (pr.get("list", []) if isinstance(pr, dict) else []) if _f(p.get("size")) > 0]
+        tag = "FUNDED" if funded else "EVAL"
+        log.info("[%s %s] equity $%.2f | DD today $%.2f/$%.2f | loss $%.2f/$%.2f | positions %d | days %s",
+                 tag, ch[:8], equity, dd_today, daily_lim, loss_tot, loss_lim, len(positions),
+                 progress.get("tradingDays"))
 
-        # v3.1: Global risk-off gate (BTC trend) + stale entry-order cleanup
-        regime = await self._get_market_regime(ch_id)
-        if regime == "risk-off":
-            log.info("  🌧️ RISK-OFF REGIME (BTC below daily 50-EMA) — new LONGS blocked, SHORTS allowed")
-        elif regime == "risk-on":
-            log.info("  ☀️ RISK-ON REGIME (BTC above daily 50-EMA) — normal trading")
-        else:
-            log.info("  🌫️ RANGE REGIME (BTC flat vs 50-EMA) — normal trading")
-        await self._cancel_stale_entry_orders(ch_id)
-
-        # v3.1: Losing-streak circuit breaker — stop after N consecutive losses.
-        # Sorted newest-first and filtered to accepted (not invalidated) trades so
-        # the consecutive count is independent of API ordering.
-        try:
-            _trades = await self.client.get_stage_trades(stage_id)
-            if isinstance(_trades, dict):
-                _trades = _trades.get("data", _trades.get("list", []))
-            _trades = [t for t in (_trades or []) if isinstance(t, dict)]
-            _trades = [t for t in _trades if t.get("accepted", True) and not t.get("invalidated", False)]
-            _trades.sort(key=lambda t: str(t.get("timestamp", "")), reverse=True)
-            _consec = 0
-            _last_ts = None
-            for _t in _trades:
-                if float(_t.get("netPnl", 0) or 0) < 0:
-                    _consec += 1
-                    if _last_ts is None:
-                        _last_ts = _t.get("timestamp")
-                else:
-                    break
-            if _consec >= MAX_CONSECUTIVE_LOSSES and _last_ts:
+        # 1) emergency brake — daily drawdown close to the limit
+        if positions and dd_today >= BRAKE_DAILY_FRAC * daily_lim:
+            log.warning("[%s] BRAKE: DD $%.2f >= %.0f%% of daily limit — flattening", ch[:8], dd_today,
+                        BRAKE_DAILY_FRAC * 100)
+            for p in positions:
                 try:
-                    _last_dt = datetime.fromisoformat(str(_last_ts).replace("Z", "+00:00"))
-                    if (datetime.now(timezone.utc) - _last_dt).total_seconds() < COOLDOWN_HOURS * 3600:
-                        log.warning("  🧊 LOSING STREAK: %d consecutive losses — COOLING OFF for %dh (%s)",
-                                    _consec, COOLDOWN_HOURS, ch_id)
-                        return
-                except Exception:
-                    pass
-        except Exception as _e:
-            log.debug("  Could not check losing streak: %s", _e)
-
-        # Manage existing positions (trailing stops, breakeven moves)
-        await self._manage_existing_positions(ch_id, stage_id)
-
-        # Step 4: Scan for signals across ALL symbols and ALL timeframes — rank and pick the BEST
-        max_risk_pct = GeminiRules.get_max_risk_pct(account_type)
-        risk_usd = balance * (max_risk_pct / 100.0)
-
-        # Multi-timeframe scanning: check each symbol on multiple timeframes
-        # and pick the BEST signal across all timeframes for that symbol
-        # Bybit interval strings: "5" = 5min, "15" = 15min, "30" = 30min,
-        # "45" = 45min (may not exist on all pairs), "60" = 1H, "240" = 4H, "D" = 1D
-        TIMEFRAMES = [
-            ("5",  "5min"),
-            ("15", "15min"),
-            ("30", "30min"),
-            ("60", "1H"),
-            ("240", "4H"),
-            ("D",  "1D"),
-        ]
-
-        # Collect ALL valid signals across all symbols AND timeframes, then rank them
-        all_valid_signals = []
-
-        all_symbols = HYRO_CRYPTO_SYMBOLS + DISCOVERY_SYMBOLS
-        for symbol in all_symbols:
-            if symbol in existing_symbols:
-                log.info("  Skipping %s — already have open position", symbol)
-                continue
-
-            # Rate-limit delay between symbols
-            await asyncio.sleep(0.5)
-
-            # Track the best signal for this symbol across all timeframes
-            best_symbol_signal = None
-            best_symbol_score = -1
-            best_symbol_tf = ""
-
-            for tf_interval, tf_label in TIMEFRAMES:
-                # Rate-limit delay between timeframes
-                await asyncio.sleep(0.3)
-
-                # Get klines from the simulator for this timeframe
-                try:
-                    klines = await self.client.get_klines(ch_id, symbol, interval=tf_interval, limit=100)
-                except Exception:
-                    continue
-
-                if not klines or len(klines) < 35:
-                    continue  # not enough data for this timeframe — skip
-
-                # Extract close prices from klines
-                prices = []
-                for k in klines:
-                    if isinstance(k, (list, tuple)) and len(k) >= 5:
-                        prices.append(float(k[4]))  # close price
-                    elif isinstance(k, dict):
-                        prices.append(float(k.get("close", k.get("c", 0))))
-
-                if len(prices) < 35:
-                    continue
-
-                # Run signal engine on this timeframe's data
-                setup = self.engine.score_symbol(f"{symbol}-USD", prices)
-                if not setup or setup.confidence < MIN_CONFIDENCE:
-                    continue
-
-                # Blacklist check
-                blocked, reason = GeminiRules.is_blacklisted(symbol)
-                if blocked:
-                    log.info("  %s %s REJECTED: %s", symbol, setup.direction, reason)
-                    break  # skip all timeframes for blacklisted symbols
-
-                # v3.1: Global risk-off gate — block LONGS when BTC is in a downtrend
-                if regime == "risk-off" and setup.direction == "LONG":
-                    log.info("  🌧️ %s LONG blocked — BTC risk-off regime (shorts only)", symbol)
-                    continue
-
-                # Get live ticker price
-                live_price = prices[-1]
-                try:
-                    ticker = await self.client.get_tickers(ch_id, symbol)
-                    if isinstance(ticker, dict):
-                        for key in ("lastPrice", "last", "price", "close"):
-                            val = ticker.get(key)
-                            if val:
-                                live_price = float(val)
-                                break
-                        if "list" in ticker and isinstance(ticker["list"], list) and ticker["list"]:
-                            live_price = float(ticker["list"][0].get("lastPrice") or ticker["list"][0].get("last") or live_price)
-                except Exception:
-                    pass  # use last candle close as fallback
-
-                # ATR-based SL/TP — use the current timeframe's candle ranges
-                recent_candles = klines[-14:] if len(klines) >= 14 else klines[-10:]
-                ranges = []
-                for k in recent_candles:
-                    if isinstance(k, (list, tuple)) and len(k) >= 5:
-                        ranges.append(float(k[2]) - float(k[3]))
-                    elif isinstance(k, dict):
-                        ranges.append(float(k.get("high", k.get("h", 0))) - float(k.get("low", k.get("l", 0))))
-                atr_proxy = sum(ranges) / len(ranges) if ranges else live_price * 0.025
-                sl_distance = atr_proxy * 1.5
-                sl_pct = max(0.015, min(0.05, sl_distance / live_price))
-                tp_distance = atr_proxy * 2.6
-                tp_pct = max(sl_pct * 1.6, tp_distance / live_price)
-
-                if setup.direction == "LONG":
-                    entry = live_price
-                    sl = live_price * (1 - sl_pct)
-                    tp = live_price * (1 + tp_pct)
-                else:
-                    entry = live_price
-                    sl = live_price * (1 + sl_pct)
-                    tp = live_price * (1 - tp_pct)
-
-                rr = abs(tp - entry) / abs(entry - sl)
-
-                # R:R check — reject if below 1.5
-                if rr < MIN_RR:
-                    continue
-
-                # Composite score: confidence + R:R + strategy bonus + timeframe bonus
-                # Faster timeframes (5min, 15min) get a small bonus for faster fills
-                # but higher timeframes (4H, 1D) get a reliability bonus
-                tf_bonus = {"5": 5, "15": 10, "30": 8, "60": 15, "240": 20, "D": 25}
-                score = (setup.confidence * 0.5) + (rr * 30) + (20 if setup.strategy == "Momentum" else 10) + tf_bonus.get(tf_interval, 0)
-
-                if score > best_symbol_score:
-                    best_symbol_score = score
-                    best_symbol_tf = tf_label
-                    best_symbol_signal = {
-                        "symbol": symbol,
-                        "direction": setup.direction,
-                        "strategy": setup.strategy,
-                        "confidence": setup.confidence,
-                        "rr": rr,
-                        "entry": entry,
-                        "sl": sl,
-                        "tp": tp,
-                        "live_price": live_price,
-                        "atr_pct": (atr_proxy / live_price) * 100,
-                        "sl_pct": sl_pct * 100,
-                        "tp_pct": tp_pct * 100,
-                        "score": score,
-                        "timeframe": tf_label,
-                        "klines": klines,
-                    }
-
-            # After checking all timeframes for this symbol, add the best one
-            if best_symbol_signal:
-                # v2.7: Cross-timeframe confluence check
-                # Get the 4H trend direction for regime filter
-                trend_direction = None
-                try:
-                    tf_4h_klines = await self.client.get_klines(ch_id, symbol, interval="240", limit=200)
-                    if tf_4h_klines and len(tf_4h_klines) >= 50:
-                        tf_4h_prices = []
-                        for k in tf_4h_klines:
-                            if isinstance(k, (list, tuple)) and len(k) >= 5:
-                                tf_4h_prices.append(float(k[4]))
-                            elif isinstance(k, dict):
-                                tf_4h_prices.append(float(k.get("close", k.get("c", 0))))
-                        if len(tf_4h_prices) >= 50:
-                            ema_50_4h = sum(tf_4h_prices[-50:]) / 50.0
-                            current_4h = tf_4h_prices[-1]
-                            if current_4h > ema_50_4h * 1.005:
-                                trend_direction = "LONG"
-                            elif current_4h < ema_50_4h * 0.995:
-                                trend_direction = "SHORT"
-                            else:
-                                trend_direction = "RANGE"
-                except Exception:
-                    pass
-
-                # v2.10: Regime filter — hard-reject signals fighting the 4H trend
-                fighting = False
-                if trend_direction and trend_direction != "RANGE":
-                    if best_symbol_signal["direction"] == trend_direction:
-                        best_symbol_signal["score"] += 20  # aligned with trend
-                        log.info("  ✅ %s signal ALIGNED with 4H %s trend (+20 bonus)", symbol, trend_direction)
-                    else:
-                        fighting = True
-                        log.info("  🚫 %s signal FIGHTING 4H %s trend — REJECTED", symbol, trend_direction)
-                elif trend_direction == "RANGE":
-                    best_symbol_signal["score"] += 5  # range = both directions OK
-
-                if fighting:
-                    continue
-
-                # v2.7: Volume confirmation
-                try:
-                    tf_klines = best_symbol_signal.get("klines", [])
-                    if tf_klines and len(tf_klines) >= 20:
-                        volumes = []
-                        for k in tf_klines[-20:]:
-                            if isinstance(k, (list, tuple)) and len(k) >= 6:
-                                volumes.append(float(k[5]))
-                            elif isinstance(k, dict):
-                                volumes.append(float(k.get("volume", k.get("v", 0))))
-                        if volumes:
-                            avg_vol = sum(volumes[:-1]) / max(len(volumes) - 1, 1)
-                            current_vol = volumes[-1]
-                            if avg_vol > 0 and current_vol > avg_vol * 1.5:
-                                best_symbol_signal["score"] += 15
-                                log.info("  📊 %s volume surge: %.1fx average (+15 bonus)", symbol, current_vol / avg_vol)
-                            elif avg_vol > 0 and current_vol < avg_vol * 0.5:
-                                best_symbol_signal["score"] -= 10
-                                log.info("  📉 %s low volume: %.1fx average (-10 penalty)", symbol, current_vol / avg_vol)
-                except Exception:
-                    pass
-
-                # v2.7: RSI divergence detection (price lower low + RSI higher low = bullish)
-                try:
-                    tf_klines = best_symbol_signal.get("klines", [])
-                    if tf_klines and len(tf_klines) >= 35:
-                        div_prices = []
-                        for k in tf_klines:
-                            if isinstance(k, (list, tuple)) and len(k) >= 5:
-                                div_prices.append(float(k[4]))
-                            elif isinstance(k, dict):
-                                div_prices.append(float(k.get("close", k.get("c", 0))))
-                        if len(div_prices) >= 35:
-                            # Check last 30 candles for divergence
-                            recent = div_prices[-30:]
-                            rsi_calc = TechnicalAnalyzer.calculate_rsi(recent)
-                            rsi_val = rsi_calc.get("value", 50)
-                            
-                            # Find last two swing lows in price
-                            if len(recent) >= 10:
-                                price_lows = [min(recent[i:i+5]) for i in range(0, len(recent)-5, 5)]
-                                if len(price_lows) >= 2 and price_lows[-1] < price_lows[-2]:
-                                    # Price made lower low
-                                    if rsi_val > 35:  # RSI not as oversold = divergence
-                                        if best_symbol_signal["direction"] == "LONG":
-                                            best_symbol_signal["score"] += 25
-                                            log.info("  🔥 %s RSI BULLISH DIVERGENCE detected (+25 bonus!)", symbol)
-                except Exception:
-                    pass
-
-                # Update the score in the signal
-                best_symbol_signal["score"] = max(0, best_symbol_signal["score"])
-
-                all_valid_signals.append(best_symbol_signal)
-                log.info("  📡 %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | TF: %s | ATR %.2f%% | SL %.2f%% TP %.2f%%",
-                         best_symbol_signal["symbol"], best_symbol_signal["direction"],
-                         best_symbol_signal["strategy"],
-                         best_symbol_signal["confidence"], best_symbol_signal["rr"],
-                         best_symbol_signal["score"], best_symbol_signal["timeframe"],
-                         best_symbol_signal["atr_pct"], best_symbol_signal["sl_pct"], best_symbol_signal["tp_pct"])
-
-        # Step 5: Rank signals by score and pick the BEST one for this account
-        if not all_valid_signals:
-            log.info("  No valid signals found across %d symbols for this account", len(all_symbols))
+                    if not DRY_RUN:
+                        await mcp.call("close_position", {"challengePublicId": ch, "symbol": p["symbol"]})
+                    log.warning("  closed %s%s", p["symbol"], " (dry run)" if DRY_RUN else "")
+                except MCPError as e:
+                    log.error("  BRAKE could not close %s: %s", p["symbol"], str(e)[:160])
             return
 
-        # Sort by score descending — best signal first
-        all_valid_signals.sort(key=lambda s: s["score"], reverse=True)
+        # 2) manage open positions (initial stop if missing, chandelier trail on closed bars)
+        open_risk, infos = 0.0, []
+        for p in positions:
+            gb, info = await self.manage(mcp, ch, p, pos_meta.get(p["symbol"]))
+            open_risk += gb
+            if info:
+                infos.append(info)
+        open_risk = await self.cap_giveback(mcp, ch, infos, open_risk, daily_lim, cushion)
+        margin_used = sum(_f(p.get("positionIM")) for p in positions)
+        cpv_used = sum(_f(p.get("positionValue")) for p in positions)
 
-        # Log the ranking
-        log.info("  🏆 SIGNAL RANKING (top 5):")
-        for i, sig in enumerate(all_valid_signals[:5]):
-            marker = "⭐" if i == 0 else "  "
-            tf_info = f" | TF: {sig.get('timeframe', '?')}" if "timeframe" in sig else ""
-            log.info("     %s #%d: %s %s | Conf %d%% | R:R 1:%.2f | Score %.1f%s",
-                     marker, i+1, sig["symbol"], sig["direction"],
-                     sig["confidence"], sig["rr"], sig["score"], tf_info)
+        # 3) stale entry limits (non reduce-only) — cancel with symbol (required by the tool)
+        await self.cancel_stale(mcp, ch)
 
-        # Pick the best signal
-        best = all_valid_signals[0]
-        log.info("  ✅ BEST SIGNAL SELECTED: %s %s | %s | Conf %d%% | R:R 1:%.2f | Score %.1f | TF: %s",
-                 best["symbol"], best["direction"], best["strategy"],
-                 best["confidence"], best["rr"], best["score"], best.get("timeframe", "4H"))
-
-        # Step 6: Smart account routing — decide if this account should take this trade
-        # Logic: funded accounts are more conservative, challenge accounts can be aggressive
-        # If funded account: only take trades with confidence >= 65 and R:R >= 1.6
-        # If challenge account: take trades with confidence >= 60 and R:R >= 1.5
-        if is_funded:
-            if best["confidence"] < 65 or best["rr"] < 1.6:
-                log.info("  🛡️ FUNDED ACCOUNT — stricter filter: conf %.0f%% < 65 or R:R %.2f < 1.6 — skipping", best["confidence"], best["rr"])
-                return
-            log.info("  🛡️ FUNDED ACCOUNT — high-confidence signal approved (0.5% risk)")
-        else:
-            log.info("  🚀 CHALLENGE ACCOUNT — signal approved (1% risk)")
-
-        # Step 7: Calculate position size and place the order
-        symbol = best["symbol"]
-        entry = best["entry"]
-        sl = best["sl"]
-        tp = best["tp"]
-        rr = best["rr"]
-
-        risk_per_unit = abs(entry - sl)
-        if risk_per_unit <= 0:
-            log.warning("  %s: zero risk per unit — skipping", symbol)
-            return
-
-        qty_raw = risk_usd / risk_per_unit
-
-        # v3.1: Precision safety — only trade symbols with a verified contract spec.
-        # get_instruments() is unusable via MCP (blows the 1MB SSE limit), so an
-        # unmapped symbol is SKIPPED rather than defaulted to a dangerous 0.01 tick.
-        if symbol not in QTY_STEPS or symbol not in TICK_STEPS:
-            log.warning("  🛑 PRECISION GUARD: no qty/tick spec for %s — skipping (avoid malformed order)", symbol)
-            return
-
-        step = QTY_STEPS[symbol]
-        qty = round(qty_raw / step) * step
-        if qty < step:
-            qty = step  # minimum 1 step
-
-        # v3.1: Notional cap — limit single-position exposure to 25% of equity.
-        # Risk-based sizing alone ignores gap/slippage: a tight SL means huge
-        # notional, so one gap through the stop can blow the whole daily DD.
-        max_notional = balance * (MAX_POSITION_NOTIONAL_PCT / 100.0)
-        if qty * entry > max_notional:
-            capped_qty = round((max_notional / entry) / step) * step
-            if capped_qty < step:
-                capped_qty = step
-            log.info("  📏 NOTIONAL CAP: %s qty %s -> %s (cap $%.2f = %.0f%% of balance)",
-                     symbol, fmt_qty(symbol, qty), fmt_qty(symbol, capped_qty),
-                     max_notional, MAX_POSITION_NOTIONAL_PCT)
-            qty = capped_qty
-
-        qty_str = fmt_qty(symbol, qty)
-        entry_str = fmt_price(symbol, entry)
-        sl_str = fmt_price(symbol, sl)
-        tp_str = fmt_price(symbol, tp)
-
-        # v2.9: ENTRY GUARDS — hard stops before any new position is placed
-        new_notional = qty * entry
-        if drawdown_limit > 0 and (current_drawdown + risk_usd) > (DAILY_DD_SAFETY_BUFFER * drawdown_limit):
-            log.warning("  🛑 DAILY DD GUARD: DD $%.2f + risk $%.2f > %.0f%% of $%.2f — skipping %s",
-                        current_drawdown, risk_usd, DAILY_DD_SAFETY_BUFFER * 100, drawdown_limit, symbol)
-            return
-        if equity_loss_limit > 0 and (current_loss + risk_usd) > (DAILY_DD_SAFETY_BUFFER * equity_loss_limit):
-            log.warning("  🛑 TOTAL LOSS GUARD: loss $%.2f + risk $%.2f > %.0f%% of $%.2f — skipping %s",
-                        current_loss, risk_usd, DAILY_DD_SAFETY_BUFFER * 100, equity_loss_limit, symbol)
-            return
-        if margin_limit > 0 and (existing_margin + new_notional) > margin_limit:
-            log.warning("  🛑 MARGIN GUARD: margin $%.2f + new $%.2f > $%.2f — skipping %s",
-                        existing_margin, new_notional, margin_limit, symbol)
-            return
-        _grp = get_correlation_group(symbol)
-        if correlation_counts.get(_grp, 0) >= MAX_CORRELATED_POSITIONS:
-            log.warning("  🛑 CORRELATION GUARD: group %s at %d (max %d) — skipping %s",
-                        _grp, correlation_counts.get(_grp, 0), MAX_CORRELATED_POSITIONS, symbol)
-            return
-        if len(positions or []) >= MAX_POSITIONS_PER_ACCOUNT:
-            log.warning("  🛑 POSITION COUNT GUARD: %d positions (max %d) — skipping %s",
-                        len(positions or []), MAX_POSITIONS_PER_ACCOUNT, symbol)
-            return
-
-        # Map direction
-        side = "Buy" if best["direction"] == "LONG" else "Sell"
-
-        log.info("  ✅ SIGNAL: %s %s | %s | R:R 1:%.2f | Conf %d%% | Entry %.6f | SL %.6f | TP %.6f | Qty %s",
-                 symbol, best["direction"], best["strategy"],
-                 rr, best["confidence"], entry, sl, tp, qty_str)
-
-        # v2.9: DRY RUN — full scan + guards, but never place a real order
-        if DRY_RUN:
-            log.info("  🧪 DRY RUN — would place: %s %s qty %s @ %s (SL %s | TP %s)",
-                     symbol, side, qty_str, entry_str, sl_str, tp_str)
-            return
-
-        # Preview the order first
-        try:
-            preview = await self.client.preview_order(
-                challenge_id=ch_id,
-                symbol=symbol,
-                side=side,
-                order_type="Limit",
-                qty=qty_str,
-                price=entry_str,
-                take_profit=tp_str,
-                stop_loss=sl_str,
-            )
-            log.info("  Preview: %s", json.dumps(preview, indent=2)[:400])
-        except Exception as e:
-            log.warning("  Preview failed for %s: %s — will try to place anyway", symbol, e)
-
-        # Place the order
-        try:
-            result = await self.client.place_order(
-                challenge_id=ch_id,
-                symbol=symbol,
-                side=side,
-                order_type="Limit",
-                qty=qty_str,
-                price=entry_str,
-                take_profit=tp_str,
-                stop_loss=sl_str,
-            )
-            log.info("  🎯 ORDER PLACED: %s %s | qty %s @ %s | SL %s | TP %s",
-                     symbol, side, qty_str, entry_str, sl_str, tp_str)
-            log.info("  Result: %s", json.dumps(result, indent=2)[:500])
-        except Exception as e:
-            log.error("  ❌ Order failed for %s: %s", symbol, e)
-
-    async def _manage_existing_positions(self, ch_id: str, stage_id: str):
-        """
-        Manage open positions: apply trailing stops using a PERSISTED 1R reference.
-        v3.1 fix: recomputing 1R from the current SL yields 0 once SL hits breakeven,
-        which silently killed the +1R/+2R ladder (v3.0 bug). We persist entry-time 1R
-        per position in bridge_state.json and reconstruct it on first sight.
-        """
-        try:
-            positions = await self.client.list_positions(ch_id)
-        except Exception as e:
-            log.debug("  Could not list positions for %s: %s", ch_id, e)
-            return
-
-        if not positions:
-            return
-
-        now_pos_keys = set()
-        for pos in positions:
-            if not isinstance(pos, dict):
-                continue
-
-            symbol = pos.get("symbol", "")
-            side = pos.get("side", "")
-            entry_price = float(pos.get("avgPrice", pos.get("entryPrice", pos.get("entry", 0))) or 0)
-            mark_price = float(pos.get("markPrice", pos.get("mark", 0)) or 0)
-            unrealized_pnl = float(pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", 0))) or 0)
-            qty = abs(float(pos.get("size", pos.get("qty", 0)) or 0))
-            current_sl = float(pos.get("stopLoss", pos.get("stop_loss", 0)) or 0)
-
-            if not symbol or entry_price <= 0 or qty <= 0:
-                continue
-
-            key = f"{ch_id}:{symbol}"
-            now_pos_keys.add(key)
-            is_long = str(side).lower() in ("buy", "long")
-
-            # Move in our favor
-            if is_long:
-                move_pct = (mark_price - entry_price) / entry_price * 100
-            else:
-                move_pct = (entry_price - mark_price) / entry_price * 100
-
-            # ── Persistent 1R reference ──────────────────────────────────────
-            stored = self.state.get("positions", {}).get(key)
-            one_r = float(stored.get("one_r", 0) or 0) if isinstance(stored, dict) else 0.0
-            if one_r <= 0 and current_sl > 0:
-                one_r = abs(entry_price - current_sl)  # reconstruct from original SL
-            if one_r <= 0:
-                log.info("  📊 POSITION: %s %s | Entry %.6f | Mark %.6f | PnL $%.2f | Move %.2f%% (no 1R ref yet)",
-                         symbol, side, entry_price, mark_price, unrealized_pnl, move_pct)
-                continue
-
-            self.state.setdefault("positions", {})[key] = {
-                "one_r": one_r,
-                "entry": entry_price,
-                "side": side,
-            }
-            self._save_state()
-
-            risk_usd = one_r * qty
-            r_multiple = (unrealized_pnl / risk_usd) if risk_usd > 0 else 0.0
-
-            log.info("  📊 POSITION: %s %s | Entry %.6f | Mark %.6f | PnL $%.2f | Move %.2f%% | %.2fR",
-                     symbol, side, entry_price, mark_price, unrealized_pnl, move_pct, r_multiple)
-
-            # Trailing ladder: +1R -> breakeven, +2R -> +1R profit
-            new_sl = None
-            reason = ""
-            if r_multiple >= 2.0:
-                new_sl = entry_price + one_r if is_long else entry_price - one_r
-                reason = "+1R (lock $%.2f)" % risk_usd
-            elif r_multiple >= 1.0:
-                new_sl = entry_price
-                reason = "breakeven"
-
-            if new_sl is None:
-                continue
-
-            # Only tighten (never widen)
-            if current_sl > 0:
-                should_tighten = (is_long and new_sl > current_sl) or (not is_long and new_sl < current_sl)
-                if not should_tighten:
-                    continue
-
+        # 4) gates for new entries
+        trades = await mcp.call("get_stage_trades", {"stagePublicId": stage_id, "pageSize": 50})
+        rows = trades.get("data", []) if isinstance(trades, dict) else []
+        last_close = max((parse_iso(t.get("timestamp")) for t in rows if isinstance(t, dict)), default=0)
+        if last_close and (time.time() - last_close) / 86400 > INACTIVITY_WARN_DAYS:
+            log.warning("[%s] INACTIVITY: last closed trade %.0f days ago (account closes at 30)", ch[:8],
+                        (time.time() - last_close) / 86400)
+        ref_ts = last_close or parse_iso(met.get("startedAt"))
+        if not scan and ref_ts and (time.time() - ref_ts) / 86400 >= KEEPALIVE_DAYS:
             try:
-                sl_str = fmt_price(symbol, new_sl)
-                await self.client.set_trading_stop(ch_id, symbol, stop_loss=sl_str)
-                log.info("  📌 TRAILING: %s -> SL %s (%s)", symbol, sl_str, reason)
-            except Exception as e:
-                log.warning("  Could not set trailing stop for %s: %s", symbol, e)
+                await self.keepalive(mcp, ch, {p["symbol"] for p in positions}, init, funded, margin_lim, margin_used)
+            except MCPError as e:
+                log.warning("[%s] keep-alive failed: %s", ch[:8], e)
+        if not scan:
+            return
+        n_loss, last_loss_ts = consecutive_losses(rows)
+        if n_loss >= LOSS_STREAK_N and (time.time() - parse_iso(last_loss_ts)) < LOSS_STREAK_PAUSE_H * 3600:
+            log.warning("[%s] %d consecutive losses — new entries paused %dh", ch[:8], n_loss, LOSS_STREAK_PAUSE_H)
+            return
+        if funded and balance - init >= 0.05 * init:
+            log.warning("[%s] PAYOUT READY: profit $%.2f >= 5%% cap — no new entries until payout", ch[:8],
+                        balance - init)
+            return
+        if len(positions) >= MAX_POSITIONS:
+            return
 
-        # Prune state for positions that no longer exist (closed)
-        stored = self.state.get("positions", {})
-        gone = [k for k in stored if k.startswith(ch_id + ":") and k not in now_pos_keys]
-        for k in gone:
-            del stored[k]
-        if gone:
-            self._save_state()
+        btc_daily = await self.bars(mcp, ch, "BTCUSDT", interval="D", limit=80)
+        regime = market_regime(btc_daily)
+        if regime in ("risk-off", "unknown"):
+            log.info("[%s] BTC regime %s — no new longs", ch[:8], regime)
+            return
+        btc4 = await self.bars(mcp, ch, "BTCUSDT")
+        if not btc4:
+            raise MCPError("no closed BTC 4H bar")
+        bar_ts = btc4[-1][0]
+        for k in [k for k in self.scanned if k[0] == ch and k[1] != bar_ts]:
+            del self.scanned[k]
+        done = self.scanned.setdefault((ch, bar_ts), set())
+        risk_pct = RISK_PCT_FUNDED if funded else RISK_PCT_EVAL
+        risk_usd = init * risk_pct / 100.0 * risk_scale(loss_tot, loss_lim)
+
+        held = {p["symbol"] for p in positions}
+        clusters = {}
+        for p in positions:
+            clusters[correlation_group(p["symbol"])] = clusters.get(correlation_group(p["symbol"]), 0) + 1
+        cands = []
+        todo = [s for s in UNIVERSE if s not in held and s not in done and not is_blacklisted(s)]
+        if not todo:
+            return  # every symbol already evaluated for this closed bar
+        t_scan0 = time.time()
+        for sym in todo:
+            if time.time() - t_scan0 > SCAN_BUDGET_S:
+                log.info("  scan time budget reached — remaining symbols next cycle")
+                break
+            try:
+                b = await self.bars(mcp, ch, sym)
+            except MCPError as e:
+                log.info("  %s: no data this cycle (%s) — retry next cycle", sym, str(e)[:80])
+                continue
+            if not b or b[-1][0] != bar_ts:
+                continue  # feed lagging; retry next cycle
+            done.add(sym)
+            sig = breakout_signal(b)
+            if sig:
+                cands.append((sig["score"], sym, sig))
+        cands.sort(reverse=True)
+        log.info("[%s] regime %s | bar %s | scanned %d/%d | breakouts: %s", ch[:8], regime,
+                 datetime.fromtimestamp(bar_ts / 1000, timezone.utc).strftime("%m-%d %H:%M"), len(done),
+                 len([s for s in UNIVERSE if not is_blacklisted(s)]),
+                 ", ".join(f"{s}({sc:.1f})" for sc, s, _ in cands[:6]) or "none")
+
+        n_open = len(positions)
+        for _sc, sym, sig in cands:
+            if n_open >= MAX_POSITIONS:
+                break
+            grp = correlation_group(sym)
+            if clusters.get(grp, 0) >= MAX_PER_CLUSTER:
+                continue
+            if open_risk + risk_usd - cushion > OPEN_RISK_DAILY_FRAC * daily_lim:
+                log.info("  budget: daily DD + open risk would exceed %.0f%% of limit — stop", OPEN_RISK_DAILY_FRAC * 100)
+                break
+            if open_risk + risk_usd - (equity - init) > OPEN_RISK_TOTAL_FRAC * loss_lim:
+                log.info("  budget: total loss + open risk would exceed %.0f%% of limit — stop", OPEN_RISK_TOTAL_FRAC * 100)
+                break
+            try:
+                placed = await self.enter(mcp, ch, sym, sig, risk_usd, equity, init, funded,
+                                          margin_lim, cpv_lim, margin_used, cpv_used)
+            except MCPError as e:
+                log.warning("  %s: entry rejected (%s)", sym, str(e)[:200])
+                continue
+            if placed:
+                n_open += 1
+                open_risk += risk_usd
+                clusters[grp] = clusters.get(grp, 0) + 1
+                margin_used += placed[0]
+                cpv_used += placed[1]
+
+    async def manage(self, mcp, ch, p, meta):
+        """Trail/repair the stop. Returns (give_back_usd, info) where give_back = (mark - stop) x size."""
+        sym, side = p["symbol"], p.get("side")
+        size, entry, mark = _f(p.get("size")), _f(p.get("avgPrice")), _f(p.get("markPrice"))
+        sl = _f(p.get("stopLoss"))
+        sign = 1 if side == "Buy" else -1
+        try:
+            inst = await self.instrument(mcp, ch, sym)
+            bars = await self.bars(mcp, ch, sym)
+        except MCPError as e:
+            log.warning("  %s: cannot manage this cycle (%s)", sym, e)
+            return (max(0.0, (mark - sl) * sign * size) if sl > 0 else 0.10 * mark * size), None
+        atr = (atr_series(bars)[-1] if len(bars) > ATR_N else None) or 0.0
+        new_sl = None
+        if sl <= 0 and atr > 0:  # never leave a position naked
+            new_sl = entry - sign * STOP_ATR * atr
+            if (side == "Buy" and new_sl >= mark) or (side == "Sell" and new_sl <= mark):
+                new_sl = mark - sign * 1.0 * atr
+            why = "initial stop (was missing)"
+        else:
+            created = parse_iso((meta or {}).get("createdTime")) * 1000 if meta else 0
+            since = [b for b in bars if b[0] + BAR_MS > created] if created else []
+            cand = chandelier_stop(since, atr, side) if since else 0.0
+            if tighten_only(side, sl, cand, mark):
+                new_sl, why = cand, f"chandelier {TRAIL_ATR}xATR"
+        if new_sl:
+            mode = ROUND_DOWN if side == "Buy" else ROUND_UP
+            sl_str = round_price(new_sl, inst["tickSize"], mode)
+            if DRY_RUN:
+                log.info("  [DRY] %s %s: would move SL %s -> %s (%s)", sym, side, p.get("stopLoss"), sl_str, why)
+            else:
+                try:
+                    await mcp.call("set_trading_stop", {"challengePublicId": ch, "symbol": sym, "stopLoss": sl_str})
+                    log.info("  TRAIL %s %s: SL %s -> %s (%s)", sym, side, p.get("stopLoss"), sl_str, why)
+                    sl = float(sl_str)
+                except MCPError as e:
+                    log.warning("  %s: stop update rejected (%s)", sym, str(e)[:160])
+        pnl = _f(p.get("unrealisedPnl"))
+        log.info("  POS %s %s size %s entry %s mark %s SL %s uPnL $%.2f", sym, side, p.get("size"),
+                 p.get("avgPrice"), p.get("markPrice"), sl, pnl)
+        gb = max(0.0, (mark - sl) * sign * size) if sl > 0 else 0.10 * mark * size
+        return gb, {"sym": sym, "side": side, "sign": sign, "size": size, "mark": mark, "sl": sl,
+                    "tick": inst["tickSize"]}
+
+    async def keepalive(self, mcp, ch, held, init, funded, margin_lim, margin_used):
+        """Tiny open+close round trip so a quiet (risk-off) market never trips the 30-day inactivity close."""
+        sym = next((s for s in KEEPALIVE_SYMBOLS if s not in held), None)
+        if not sym:
+            return
+        inst = await self.instrument(mcp, ch, sym)
+        tk = await mcp.call("get_tickers", {"challengePublicId": ch, "symbol": sym})
+        px = _f(((tk.get("list") or [{}])[0] if isinstance(tk, dict) else {}).get("lastPrice"))
+        if px <= 0:
+            return
+        notional = 0.052 * init
+        if funded and margin_lim > 0:
+            notional = min(notional, MARGIN_USE_FRAC * margin_lim - margin_used)
+        notional = max(notional, float(inst.get("minNotionalValue", 5) or 5) * 1.3)
+        need = max(float(inst["minOrderQty"]), notional / px)
+        qty = format(round_step(need, inst["qtyStep"], ROUND_UP), "f")
+        log.warning("[%s] KEEP-ALIVE: no closed trade for %d+ days — %s round trip qty %s (~$%.2f)%s",
+                    ch[:8], KEEPALIVE_DAYS, sym, qty, float(qty) * px, " [DRY RUN]" if DRY_RUN else "")
+        if DRY_RUN:
+            return
+        day = datetime.now(timezone.utc).strftime("%Y%m%d")
+        await mcp.call("place_order", {"challengePublicId": ch, "symbol": sym, "side": "Buy", "orderType": "Market",
+                                       "qty": qty, "orderLinkId": f"qt32-ka-{sym[:6]}-{day}"})
+        await asyncio.sleep(3)
+        await mcp.call("close_position", {"challengePublicId": ch, "symbol": sym})
+
+    async def cap_giveback(self, mcp, ch, infos, total, daily_lim, cushion):
+        """Hyro daily DD is measured from 00:00 UTC equity INCLUDING open profit, so giving back open
+        profit is drawdown (how the 10K died on Oct 12 while in profit). If all stops hitting would
+        exceed GIVEBACK_FRAC of the daily limit, tighten every stop proportionally (never loosen)."""
+        allowed = GIVEBACK_FRAC * daily_lim + cushion
+        if total <= allowed or total <= 0 or allowed <= 0 or not infos:
+            return total
+        scale = allowed / total
+        log.warning("[%s] GIVE-BACK SHIELD: stops allow $%.2f > $%.2f — tightening x%.2f", ch[:8], total, allowed, scale)
+        new_total = total
+        for i in infos:
+            gb = max(0.0, (i["mark"] - i["sl"]) * i["sign"] * i["size"])
+            if gb <= 0 or i["size"] <= 0:
+                continue
+            cand = i["mark"] - i["sign"] * gb * scale / i["size"]
+            px = round_price(cand, i["tick"], ROUND_UP if i["sign"] > 0 else ROUND_DOWN)
+            if not tighten_only(i["side"], i["sl"], float(px), i["mark"]):
+                continue
+            if DRY_RUN:
+                log.info("  [DRY] %s: would tighten SL %s -> %s (give-back shield)", i["sym"], i["sl"], px)
+            else:
+                try:
+                    await mcp.call("set_trading_stop", {"challengePublicId": ch, "symbol": i["sym"], "stopLoss": px})
+                    log.info("  SHIELD %s: SL %s -> %s", i["sym"], i["sl"], px)
+                except MCPError as e:
+                    log.warning("  %s: shield stop rejected (%s)", i["sym"], str(e)[:160])
+                    continue
+            new_total -= gb - max(0.0, (i["mark"] - float(px)) * i["sign"] * i["size"])
+        return new_total
+
+    async def cancel_stale(self, mcp, ch):
+        d = await mcp.call("list_open_orders", {"challengePublicId": ch, "limit": 50})
+        now = time.time() * 1000
+        for o in (d.get("list", []) if isinstance(d, dict) else []):
+            if o.get("reduceOnly") or str(o.get("orderType")) != "Limit" or o.get("stopOrderType"):
+                continue
+            if now - _f(o.get("createdTime"), now) < STALE_ENTRY_MS:
+                continue
+            if DRY_RUN:
+                log.info("  [DRY] would cancel stale %s limit %s", o.get("symbol"), o.get("orderId"))
+                continue
+            try:
+                await mcp.call("cancel_order", {"challengePublicId": ch, "symbol": o.get("symbol"),
+                                                "orderId": o.get("orderId")})
+                log.info("  cancelled stale %s entry limit %s", o.get("symbol"), o.get("orderId"))
+            except MCPError as e:
+                log.warning("  could not cancel %s: %s", o.get("orderId"), str(e)[:160])
+
+    async def enter(self, mcp, ch, sym, sig, risk_usd, equity, init, funded,
+                    margin_lim, cpv_lim, margin_used, cpv_used):
+        inst = await self.instrument(mcp, ch, sym)
+        tk = await mcp.call("get_tickers", {"challengePublicId": ch, "symbol": sym})
+        row = (tk.get("list") or [{}])[0] if isinstance(tk, dict) else {}
+        last = _f(row.get("lastPrice")) or sig["close"]
+        if abs(last / sig["close"] - 1) > 0.5 * STOP_ATR * sig["atr"] / sig["close"]:
+            log.info("  %s: price ran %.2f%% from the signal close — skip (chasing)", sym, 100 * (last / sig["close"] - 1))
+            return None
+        stop = last - STOP_ATR * sig["atr"]
+        qty, notional = size_position(risk_usd, last, stop, equity, inst)
+        if qty is None:
+            log.info("  %s: size rejected (%s)", sym, notional)
+            return None
+        if notional < MIN_NOTIONAL_PCT_INITIAL / 100.0 * init:
+            log.info("  %s: notional $%.0f < 5%% of initial (would not count as a trading day) — still OK", sym, notional)
+        sl_str = round_price(stop, inst["tickSize"], ROUND_DOWN)
+        args = {"challengePublicId": ch, "symbol": sym, "side": "Buy", "orderType": "Market",
+                "qty": qty, "stopLoss": sl_str, "orderLinkId": order_link_id(sym, sig["bar_ts"])}
+        pv = await mcp.call("preview_order", {k: v for k, v in args.items() if k != "orderLinkId"})
+        im = _f(pv.get("estimatedInitialMargin"), notional) if isinstance(pv, dict) else notional
+        if funded:
+            if margin_lim > 0 and margin_used + im > MARGIN_USE_FRAC * margin_lim:
+                log.warning("  %s: MARGIN GUARD %.0f + %.0f > %.0f%% of $%.0f — skip", sym, margin_used, im,
+                            MARGIN_USE_FRAC * 100, margin_lim)
+                return None
+            if cpv_lim > 0 and cpv_used + notional > CPV_USE_FRAC * cpv_lim:
+                log.warning("  %s: CPV GUARD — skip", sym)
+                return None
+        log.info("  >>> ENTRY %s LONG qty %s ~$%.0f notional @ ~%s | SL %s (%.1fxATR) | risk $%.2f | score %.1f%s",
+                 sym, qty, notional, last, sl_str, STOP_ATR, risk_usd, sig["score"], " [DRY RUN]" if DRY_RUN else "")
+        if DRY_RUN:
+            return (im, notional)
+        res = await mcp.call("place_order", args)
+        log.info("  order result: %s", json.dumps(res, default=str)[:300])
+        return (im, notional)
 
 
-# ─── Main Entry Point ──────────────────────────────────────────────────────────
+# ═══ entry point ══════════════════════════════════════════════════════════════
 def load_token() -> str:
-    """Load agent token from environment variable (Render) or .env file (local)."""
-    # 1. Try environment variable first (Render sets this directly)
-    token = os.getenv(TOKEN_ENV_VAR, "")
-    if token and token != "YOUR_TOKEN_HERE":
-        log.info("Token loaded from environment variable")
-        return token
-
-    # 2. Try .env file (local development)
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(f"{TOKEN_ENV_VAR}=") and not line.startswith("#"):
-                    token = line.split("=", 1)[1].strip()
-                    if token and token != "YOUR_TOKEN_HERE":
-                        log.info("Token loaded from .env file")
-                        return token
-                    else:
-                        log.error("Found .env but token is not set. Edit .env and paste your token.")
-                        log.error("File: %s", env_path)
-                        sys.exit(1)
-
-    log.error("No agent token found!")
-    log.error("  Local: Create .env with: %s=your_token", TOKEN_ENV_VAR)
-    log.error("  Render: Set HYRO_AGENT_TOKEN environment variable in the worker settings")
-    log.error("  Get your token at: my.hyrotrader.com → Settings → Agent tokens")
+    tok = os.getenv(TOKEN_ENV_VAR, "").strip()
+    if tok:
+        return tok
+    env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env):
+        for line in open(env, encoding="utf-8"):
+            if line.startswith(TOKEN_ENV_VAR + "="):
+                tok = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if tok:
+                    return tok
+    log.error("No %s found (env var on Render, .env locally)", TOKEN_ENV_VAR)
     sys.exit(1)
 
 
-async def main():
-    """Main async entry point."""
-    log.info("=" * 70)
-    log.info("  QuantumTrader ↔ HyroTrader MCP Bridge")
-    log.info("  Automated Crypto Trading on Your Hyro Challenges")
-    log.info("  Version: %s", VERSION)
-    log.info("=" * 70)
-    log.info("  Legal: HyroTrader allows own-strategy trading bots.")
-    log.info("  This bot uses YOUR signal engine, YOUR rules, YOUR risk management.")
-    log.info("=" * 70)
-
-    token = load_token()
-    bridge = HyroBridge(token)
-
-    # Run one scan cycle
-    await bridge.run_scan_cycle()
-
-    log.info("Scan complete. Exiting.")
-    log.info("To run continuously: python hyro_bridge.py --loop")
-    log.info("Review hyro_bridge.log for all actions taken.")
+async def main(loop: bool):
+    log.info("QuantumTrader <-> HyroTrader bridge v%s | 4H Donchian(%d) breakout, long-only | risk eval %.2f%% "
+             "funded %.2f%% | DRY_RUN=%s", VERSION, DONCHIAN_N, RISK_PCT_EVAL, RISK_PCT_FUNDED, DRY_RUN)
+    bridge = HyroBridge(load_token())
+    while True:
+        try:
+            await bridge.run_cycle()
+        except Exception as e:
+            log.error("cycle error: %s", e, exc_info=True)
+        if not loop:
+            return
+        await asyncio.sleep(SCAN_INTERVAL)
 
 
 if __name__ == "__main__":
-    # Check for --loop flag
-    if "--loop" in sys.argv:
-        async def loop_main():
-            token = load_token()
-            bridge = HyroBridge(token)
-            interval = int(os.getenv("SCAN_INTERVAL", "600"))  # 10 min default
-            log.info("Running in LOOP mode — scanning every %d seconds", interval)
-            while True:
-                try:
-                    await bridge.run_scan_cycle()
-                except Exception as e:
-                    log.error("Scan cycle error: %s", e, exc_info=True)
-                await asyncio.sleep(interval)
-        asyncio.run(loop_main())
-    else:
-        asyncio.run(main())
+    asyncio.run(main("--loop" in sys.argv))

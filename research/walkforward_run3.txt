@@ -1,0 +1,10 @@
+risk0.50% lb0.7 ddscale0 ALL {'n': 161, 'pass_': np.float64(7.5), 'fail': np.float64(87.6), 'inactive': 140, 'daily': 1, 'maxloss': 0, 'open_': np.float64(5.0), 'med_days': 84, 'trades_per_month': 6.4}
+risk0.50% lb0.7 ddscale0 OOS {'n': 62, 'pass_': np.float64(6.5), 'fail': np.float64(80.6), 'inactive': 50, 'daily': 0, 'maxloss': 0, 'open_': np.float64(12.9), 'med_days': 48, 'trades_per_month': 5.1}
+risk0.50% lb0.9 ddscale1 ALL {'n': 161, 'pass_': np.float64(7.5), 'fail': np.float64(87.6), 'inactive': 140, 'daily': 1, 'maxloss': 0, 'open_': np.float64(5.0), 'med_days': 84, 'trades_per_month': 7.1}
+risk0.50% lb0.9 ddscale1 OOS {'n': 62, 'pass_': np.float64(6.5), 'fail': np.float64(80.6), 'inactive': 50, 'daily': 0, 'maxloss': 0, 'open_': np.float64(12.9), 'med_days': 48, 'trades_per_month': 5.4}
+risk0.40% lb0.9 ddscale1 ALL {'n': 161, 'pass_': np.float64(1.2), 'fail': np.float64(91.9), 'inactive': 147, 'daily': 1, 'maxloss': 0, 'open_': np.float64(6.8), 'med_days': 61, 'trades_per_month': 7.4}
+risk0.40% lb0.9 ddscale1 OOS {'n': 62, 'pass_': np.float64(1.6), 'fail': np.float64(80.6), 'inactive': 50, 'daily': 0, 'maxloss': 0, 'open_': np.float64(17.7), 'med_days': 43, 'trades_per_month': 5.4}
+risk0.75% lb0.9 ddscale1 ALL {'n': 161, 'pass_': np.float64(3.1), 'fail': np.float64(90.1), 'inactive': 144, 'daily': 1, 'maxloss': 0, 'open_': np.float64(6.8), 'med_days': 110, 'trades_per_month': 6.0}
+risk0.75% lb0.9 ddscale1 OOS {'n': 62, 'pass_': np.float64(1.6), 'fail': np.float64(80.6), 'inactive': 50, 'daily': 0, 'maxloss': 0, 'open_': np.float64(17.7), 'med_days': 43, 'trades_per_month': 4.8}
+risk0.35% lb0.95 ddscale1 ALL {'n': 161, 'pass_': np.float64(0.0), 'fail': np.float64(92.5), 'inactive': 148, 'daily': 1, 'maxloss': 0, 'open_': np.float64(7.5), 'med_days': None, 'trades_per_month': 7.4}
+risk0.35% lb0.95 ddscale1 OOS {'n': 62, 'pass_': np.float64(0.0), 'fail': np.float64(80.6), 'inactive': 50, 'daily': 0, 'maxloss': 0, 'open_': np.float64(19.4), 'med_days': None, 'trades_per_month': 5.4}

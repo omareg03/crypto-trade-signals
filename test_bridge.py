@@ -1,199 +1,254 @@
 """
-test_bridge.py — QA test suite for the QuantumTrader <-> HyroTrader bridge (v3.1).
+test_bridge.py — QA suite for hyro_bridge v3.2 (run: python test_bridge.py).
 
-Run:  python test_bridge.py   (requires Python 3.13 with mcp + httpx2 installed)
-
-Covers:
-  - smoke: module imports + constants sanity
-  - regression: blacklist (startswith vs substring), R:R minimum, signal generation,
-    order-precision formatting (v3.1)
-  - verification: risk routing (2%->1%), correlation clustering, avgPrice fix,
-    momentum SHORT branch, trailing 1R persistence (v3.1)
-  - sanity: guard math vs the real account scenarios, notional cap math (v3.1),
-    losing-streak sort/filter (v3.1)
+Sections: SMOKE (imports/constants) | REGRESSION (v3.1 root-cause bugs stay fixed) |
+VERIFICATION (indicator + signal math vs hand-computed values) | SANITY (risk/sizing/guards) |
+VALIDATION (live helpers reproduce the research backtest's pandas signals on real data, if present).
 """
-import sys
+import glob
 import os
+import sys
+from decimal import Decimal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hyro_bridge as hb  # noqa: E402
 
-import hyro_bridge
-from hyro_bridge import (
-    GeminiRules, get_correlation_group,
-    QTY_STEPS, TICK_STEPS, fmt_price, fmt_qty,
-    VERSION, MAX_POSITION_NOTIONAL_PCT, STALE_ORDER_HOURS, STATE_FILE,
-)
-from signal_engine import SignalEngine
-from technical_analysis import TechnicalAnalyzer
-
-FAILURES = []
+FAIL = []
 
 
 def check(name, cond, detail=""):
-    status = "PASS" if cond else "FAIL"
-    print(f"[{status}] {name}" + (f"  {detail}" if detail else ""))
+    print(f"[{'PASS' if cond else 'FAIL'}] {name}" + (f"  {detail}" if detail else ""))
     if not cond:
-        FAILURES.append(name)
+        FAIL.append(name)
 
 
-def raises(fn):
-    try:
-        fn()
-        return False
-    except ValueError:
-        return True
+def bar(i, o, h, l, c, v=1.0, step=hb.BAR_MS, t0=1_700_000_000_000):
+    return (t0 + i * step, o, h, l, c, v)
 
 
-print("=" * 64)
-print("QA SUITE — QuantumTrader bridge v3.1")
-print("=" * 64)
+print("=" * 66)
+print(f"QA SUITE — hyro_bridge v{hb.VERSION}")
+print("=" * 66)
 
-# 1. SMOKE: imports + constants
-check("import hyro_bridge", True)
-check("MIN_RR == 1.5", hyro_bridge.MIN_RR == 1.5)
-check("MAX_POSITIONS_PER_ACCOUNT == 3", hyro_bridge.MAX_POSITIONS_PER_ACCOUNT == 3)
-check("MAX_CORRELATED_POSITIONS == 2", hyro_bridge.MAX_CORRELATED_POSITIONS == 2)
-check("FUNDED_MARGIN_LIMIT_PCT == 25.0", hyro_bridge.FUNDED_MARGIN_LIMIT_PCT == 25.0)
-check("DAILY_DD_SAFETY_BUFFER == 0.5", hyro_bridge.DAILY_DD_SAFETY_BUFFER == 0.5)
-check("MAX_CONSECUTIVE_LOSSES == 3", hyro_bridge.MAX_CONSECUTIVE_LOSSES == 3)
-check("COOLDOWN_HOURS == 6", hyro_bridge.COOLDOWN_HOURS == 6)
-check("VERSION == 3.1.0", VERSION == "3.1.0")
-check("MAX_POSITION_NOTIONAL_PCT == 25.0", MAX_POSITION_NOTIONAL_PCT == 25.0)
-check("STALE_ORDER_HOURS == 6", STALE_ORDER_HOURS == 6)
-check("STATE_FILE is bridge_state.json", STATE_FILE.endswith("bridge_state.json"))
-check("QTY_STEPS is a dict", isinstance(QTY_STEPS, dict) and len(QTY_STEPS) > 0)
-check("TICK_STEPS is a dict", isinstance(TICK_STEPS, dict) and len(TICK_STEPS) > 0)
-check("fmt_price callable", callable(fmt_price))
-check("fmt_qty callable", callable(fmt_qty))
-check("_get_market_regime exists", hasattr(hyro_bridge.HyroBridge, "_get_market_regime"))
-check("_cancel_stale_entry_orders exists", hasattr(hyro_bridge.HyroBridge, "_cancel_stale_entry_orders"))
+# ── SMOKE ───────────────────────────────────────────────────────────────
+check("version 3.2.0", hb.VERSION == "3.2.0")
+check("4H interval", hb.INTERVAL == "240" and hb.BAR_MS == 14_400_000)
+check("strategy constants", (hb.DONCHIAN_N, hb.EMA_TREND, hb.STOP_ATR, hb.TRAIL_ATR) == (20, 200, 3.0, 4.5))
+check("kline limit >= 600 (EMA200 convergence)", hb.KLINE_LIMIT >= 600)
+check("risk defaults sane", 0 < hb.RISK_PCT_FUNDED <= 0.5 and 0 < hb.RISK_PCT_EVAL <= 1.0,
+      f"eval {hb.RISK_PCT_EVAL}% funded {hb.RISK_PCT_FUNDED}%")
+check("brake 75% / keep-alive 26d", hb.BRAKE_DAILY_FRAC == 0.75 and hb.KEEPALIVE_DAYS < 30)
+check("keep-alive symbols are liquid, non-blacklisted", all(s in hb.UNIVERSE and not hb.is_blacklisted(s) for s in hb.KEEPALIVE_SYMBOLS))
+check("max positions 3 / cluster 2", hb.MAX_POSITIONS == 3 and hb.MAX_PER_CLUSTER == 2)
+check("ORDI removed (sub-$100M low-cap rule)", "ORDIUSDT" not in hb.UNIVERSE)
+check("universe has no blacklisted symbols", not any(hb.is_blacklisted(s) for s in hb.UNIVERSE))
+check("universe unique", len(hb.UNIVERSE) == len(set(hb.UNIVERSE)))
 
-# 2. REGRESSION: blacklist — must match BASE by prefix, not substring
-check("blacklist NEAR", GeminiRules.is_blacklisted("NEARUSDT")[0] is True)
-check("blacklist LINK", GeminiRules.is_blacklisted("LINKUSDT")[0] is True)
-check("blacklist standalone USDT", GeminiRules.is_blacklisted("USDT")[0] is True)
-check("blacklist JPY pair", GeminiRules.is_blacklisted("USDJPY")[0] is True)
-check("NOT blacklist BTCUSDT (USDT is suffix)", GeminiRules.is_blacklisted("BTCUSDT")[0] is False)
-check("NOT blacklist ORDIUSDT", GeminiRules.is_blacklisted("ORDIUSDT")[0] is False)
+# ── REGRESSION: v3.1 root cause — klines arrive NEWEST-FIRST ────────────
+newest_first = {"list": [[str(1_700_000_000_000 + i * hb.BAR_MS), "1", "2", "0.5", str(10 + i), "5", "50"]
+                         for i in reversed(range(5))]}
+asc = hb.parse_klines(newest_first)
+check("parse_klines sorts ascending", [b[0] for b in asc] == sorted(b[0] for b in asc))
+check("parse_klines last bar is newest close", asc[-1][4] == 14.0)
+dup = {"list": newest_first["list"] + [newest_first["list"][0]]}
+check("parse_klines de-duplicates timestamps", len(hb.parse_klines(dup)) == 5)
+check("parse_klines tolerates junk rows", len(hb.parse_klines({"list": [["x"], None, [1, 2]]})) == 0)
+now = 1_700_000_000_000 + 4 * hb.BAR_MS + 1000          # inside bar #4 (forming)
+closed = hb.closed_only(asc, hb.BAR_MS, now)
+check("closed_only drops the forming bar", [b[0] for b in closed] == [b[0] for b in asc[:4]])
+check("closed_only keeps a bar exactly at its close", len(hb.closed_only(asc, hb.BAR_MS, asc[-1][0] + hb.BAR_MS)) == 5)
 
-# 3. REGRESSION: R:R minimum
-check("R:R 1.0 rejected", GeminiRules.check_rr(1.0)[0] is False)
-check("R:R 1.5 accepted", GeminiRules.check_rr(1.5)[0] is True)
-check("R:R 2.35 accepted", GeminiRules.check_rr(2.35)[0] is True)
+# blacklist regression (prefix, not substring)
+check("blacklist NEAR/LINK", hb.is_blacklisted("NEARUSDT") and hb.is_blacklisted("LINKUSDT"))
+check("BTCUSDT not blacklisted (USDT suffix)", not hb.is_blacklisted("BTCUSDT"))
+check("JPY + bare USDT blacklisted", hb.is_blacklisted("USDJPY") and hb.is_blacklisted("USDT"))
 
-# 4. REGRESSION: order precision (v3.1) — verified tick/qty formatting
-check("fmt_price BTC tick 0.1", fmt_price("BTCUSDT", 82000.123) == "82000.1", fmt_price("BTCUSDT", 82000.123))
-check("fmt_qty BTC step 0.001", fmt_qty("BTCUSDT", 0.049) == "0.049", fmt_qty("BTCUSDT", 0.049))
-check("fmt_price PEPE tick 1e-7", fmt_price("PEPEUSDT", 0.0000123) == "0.000012", fmt_price("PEPEUSDT", 0.0000123))
-check("fmt_qty PEPE step 100", fmt_qty("PEPEUSDT", 1200) == "1200", fmt_qty("PEPEUSDT", 1200))
-check("fmt_price raises on unmapped symbol", raises(lambda: fmt_price("ORDIUSDT", 1.0)))
-check("fmt_qty raises on unmapped symbol", raises(lambda: fmt_qty("ORDIUSDT", 1.0)))
-unmapped = [s for s in ("ORDIUSDT", "1000PEPEUSDT", "KASUSDT", "WLDUSDT") if s not in QTY_STEPS]
-check("discovery symbols unmapped -> precision guard skips them", len(unmapped) == 4)
+# ── VERIFICATION: indicator math ────────────────────────────────────────
+e = hb.ema_series([1, 2, 3, 4, 5], 3)
+check("EMA warm-up is None", e[:2] == [None, None])
+# seeded at 1 (pandas adjust=False): a=0.5 -> 1, 1.5, 2.25, 3.125, 4.0625
+check("EMA values (adjust=False)", abs(e[2] - 2.25) < 1e-12 and abs(e[4] - 4.0625) < 1e-12, f"{e}")
+bars_atr = [bar(0, 10, 11, 9, 10), bar(1, 10, 12, 10, 11), bar(2, 11, 11.5, 8, 9)]
+a = hb.atr_series(bars_atr, n=2)
+# TR: 2, max(2,2,0)=2, max(3.5,0.5,3)=3.5 ; Wilder n=2 seeded at 2 -> 2, 2, 2.75
+check("ATR Wilder values", a[0] is None and abs(a[1] - 2.0) < 1e-12 and abs(a[2] - 2.75) < 1e-12, f"{a}")
 
-# 5. VERIFICATION: risk routing (2% -> 1% challenge)
-check("funded risk == 0.5%", GeminiRules.get_max_risk_pct("funded") == 0.5)
-check("challenge risk == 1.0%", GeminiRules.get_max_risk_pct("evaluation") == 1.0)
-check("challenge risk == 1.0% (fallback)", GeminiRules.get_max_risk_pct("challenge") == 1.0)
+# Donchian breakout on synthetic data
+flat = [bar(i, 100, 101, 99, 100) for i in range(260)]
+check("no signal on flat market", hb.breakout_signal(flat) is None)
+up = flat[:-1] + [bar(259, 100, 106, 100, 105)]
+sig = hb.breakout_signal(up)
+check("breakout above prior-20 high fires", sig is not None and sig["close"] == 105)
+check("signal score positive", sig is not None and sig["score"] > 0)
+below_ema = [bar(i, 200 - i * 0.5, 201 - i * 0.5, 199 - i * 0.5, 200 - i * 0.5) for i in range(259)]
+below_ema.append(bar(259, 70, 72, 69, 71))   # local high but far below EMA200
+check("breakout below EMA200 rejected", hb.breakout_signal(below_ema) is None)
+check("too few bars -> None", hb.breakout_signal(up[-100:]) is None)
 
-# 6. VERIFICATION: correlation clustering
-check("BTC cluster", get_correlation_group("BTCUSDT") == "BTC")
-check("ORDI clusters with BTC", get_correlation_group("ORDIUSDT") == "BTC")
-check("SOL cluster", get_correlation_group("SOLUSDT") == "SOL")
-check("ETH cluster", get_correlation_group("ETHUSDT") == "ETH")
-check("XRP uncorrelated (own group)", get_correlation_group("XRPUSDT") == "XRPUSDT")
-check("case-insensitive", get_correlation_group("btcusdt") == "BTC")
+# regime
+daily_up = [bar(i, 100, 101, 99, 100 + i, step=86_400_000) for i in range(60)]
+daily_dn = [bar(i, 100, 101, 99, 200 - i, step=86_400_000) for i in range(60)]
+check("regime risk-on", hb.market_regime(daily_up) == "risk-on")
+check("regime risk-off", hb.market_regime(daily_dn) == "risk-off")
+check("regime unknown on short history", hb.market_regime(daily_up[:20]) == "unknown")
 
-# 7. REGRESSION: signal engine TF R:R is now real (1.5, not 1.0)
-engine = SignalEngine(TechnicalAnalyzer())
-prices_up = [100.0 + 0.02 * i * i for i in range(60)]  # accelerating up -> TF LONG
-tf = engine._trend_following("BTC-USD", prices_up)
-if tf is not None:
-    check("TF LONG generated", tf.direction == "LONG")
-    check("TF LONG R:R == 1.5", abs(tf.risk_reward - 1.5) < 0.01, f"(got {tf.risk_reward:.2f})")
-else:
-    print("[SKIP] TF LONG not triggered by synthetic data")
-prices_dn = [200.0 - 0.02 * i * i for i in range(60)]  # accelerating down -> TF SHORT
-tf2 = engine._trend_following("BTC-USD", prices_dn)
-if tf2 is not None:
-    check("TF SHORT generated", tf2.direction == "SHORT")
-    check("TF SHORT R:R == 1.5", abs(tf2.risk_reward - 1.5) < 0.01, f"(got {tf2.risk_reward:.2f})")
-else:
-    print("[SKIP] TF SHORT not triggered by synthetic data")
+# chandelier + tighten-only
+since = [bar(0, 100, 110, 99, 108), bar(1, 108, 120, 107, 118)]
+check("chandelier long = HH - 4.5*ATR", hb.chandelier_stop(since, 2.0, "Buy") == 120 - 9.0)
+check("chandelier short = LL + 4.5*ATR", hb.chandelier_stop(since, 2.0, "Sell") == 99 + 9.0)
+check("tighten: long moves up", hb.tighten_only("Buy", 100, 105, 118))
+check("tighten: long never loosens", not hb.tighten_only("Buy", 106, 105, 118))
+check("tighten: long never crosses price", not hb.tighten_only("Buy", 100, 119, 118))
+check("tighten: short moves down", hb.tighten_only("Sell", 120, 115, 110))
+check("tighten: short never loosens", not hb.tighten_only("Sell", 112, 115, 110))
 
-# 8. VERIFICATION: Momentum now has a SHORT branch (v3.0)
-prices_mom_dn = [100 + (1.5 if i % 2 == 0 else -2.5) for i in range(60)]  # RSI ~48, MACD < 0
-mom = engine._momentum("BTC-USD", prices_mom_dn)
-if mom is not None:
-    check("Momentum SHORT generated", mom.direction == "SHORT")
-    check("Momentum SHORT R:R == 1.6", abs(mom.risk_reward - 1.6) < 0.01, f"(got {mom.risk_reward:.2f})")
-else:
-    print("[SKIP] Momentum SHORT not triggered")
-prices_mom_up = [100 + (-1.5 if i % 2 == 0 else 2.5) for i in range(60)]  # RSI ~52, MACD > 0
-mom2 = engine._momentum("BTC-USD", prices_mom_up)
-if mom2 is not None:
-    check("Momentum LONG generated (regression)", mom2.direction == "LONG")
-    check("Momentum LONG R:R == 1.6", abs(mom2.risk_reward - 1.6) < 0.01, f"(got {mom2.risk_reward:.2f})")
-else:
-    print("[SKIP] Momentum LONG not triggered")
+# ── SANITY: sizing, rounding, idempotency, budgets ──────────────────────
+btc = {"tickSize": "0.10", "qtyStep": "0.001", "minOrderQty": "0.001", "minNotionalValue": "5"}
+pepe = {"tickSize": "0.0000010", "qtyStep": "100", "minOrderQty": "100", "minNotionalValue": "5"}
+check("price rounds to tick (BTC)", hb.round_price(82000.123, "0.10") == "82000.10")
+check("price rounds to tick (1000PEPE)", hb.round_price(0.0123456, "0.0000010") == "0.0123460")
+check("qty rounds DOWN to step", hb.round_step(0.04999, "0.001") == Decimal("0.049"))
+q, notional = hb.size_position(50.0, 82000.0, 82000.0 - 3 * 900.0, 10000.0, btc)
+check("BTC risk sizing ($50 / $2700 stop)", q == "0.018", f"qty {q} notional {notional:.0f}")
+check("BTC stop risk <= budget", float(q) * 2700.0 <= 50.0 + 1e-9)
+q2, n2 = hb.size_position(400.0, 82000.0, 81800.0, 10000.0, btc)   # tight stop -> notional cap
+check("notional capped at 25% of equity", q2 is not None and n2 <= 2500.0 + 1e-6, f"qty {q2} notional {n2:.0f}")
+q3, why = hb.size_position(0.01, 82000.0, 79000.0, 10000.0, btc)
+check("below minOrderQty rejected", q3 is None and "minOrderQty" in why)
+q4, n4 = hb.size_position(25.0, 0.0123, 0.0123 * 0.92, 5000.0, pepe)
+check("1000PEPE sizing uses step 100", q4 is not None and int(Decimal(q4)) % 100 == 0, f"qty {q4}")
+check("zero stop distance rejected", hb.size_position(50, 100, 100, 1e4, btc)[0] is None)
+lid = hb.order_link_id("1000PEPEUSDT", 1_791_849_600_000)
+check("orderLinkId <= 36 chars and stable", len(lid) <= 36 and lid == hb.order_link_id("1000PEPEUSDT", 1_791_849_600_000), lid)
+check("orderLinkId differs per bar", lid != hb.order_link_id("1000PEPEUSDT", 1_791_849_600_000 + hb.BAR_MS))
 
-# 9. VERIFICATION: avgPrice fix (trailing stops now engage)
-pos = {"avgPrice": "82922.60", "markPrice": "81823.53", "size": "0.016",
-       "stopLoss": "81382.4", "side": "Buy", "unrealisedPnl": "-17.58512"}
-entry_fixed = float(pos.get("avgPrice", pos.get("entryPrice", pos.get("entry", 0))) or 0)
-entry_old = float(pos.get("entryPrice", pos.get("entry", 0)) or 0)
-check("avgPrice extracted correctly", abs(entry_fixed - 82922.60) < 0.001, f"(got {entry_fixed})")
-check("old entryPrice-only code would return 0 (confirms fix)", entry_old == 0)
-
-# 10. VERIFICATION: trailing 1R persistence (v3.1) — the v3.0 ladder-killer
-entry, orig_sl, breakeven_sl = 100.0, 97.5, 100.0
-one_r_correct = abs(entry - orig_sl)                       # 2.5 = the persisted value
-recomputed_at_breakeven = abs(entry - breakeven_sl)        # 0.0 = what v3.0 computed -> ladder died
-check("persisted 1R == 2.5 (correct)", one_r_correct == 2.5)
-check("v3.0 bug: recomputed 1R at breakeven == 0", recomputed_at_breakeven == 0)
-
-# 11. SANITY: guard math vs the two real account scenarios
-old_two_corr = 2 * (10000 * 0.02)   # OLD: 2% x 2 correlated losses
-new_three_corr = 3 * (10000 * 0.01)  # NEW: 1% x 3 correlated losses
-check("OLD 2% x2 correlated == $400 (would breach daily DD)", old_two_corr == 400)
-check("NEW 1% x3 correlated == $300 < $400 (safe)", new_three_corr < 400, f"(${new_three_corr})")
-check("margin guard blocks live 5K breach", 2334.75 + 1000.0 > 1250.0,
-      "(existing margin $2,334 already > $1,250 limit)")
-
-# 12. SANITY: notional cap math (v3.1) — closes the gap/slippage hole
-balance = 10000.0
-max_notional = balance * (MAX_POSITION_NOTIONAL_PCT / 100.0)
-check("notional cap = $2500 on 10K", abs(max_notional - 2500.0) < 1e-9)
-entry_p = 82000.0
-risk_per_unit = entry_p * 0.025              # 2.5% SL
-qty_raw = 100.0 / risk_per_unit              # 1% risk
-raw_notional = qty_raw * entry_p             # ~$4000 = 40% of equity (the live BTC oversize)
-capped_qty = round((max_notional / entry_p) / 0.001) * 0.001
-capped_notional = capped_qty * entry_p
-check("raw notional $4000 exceeds cap (the live 80% BTC problem)", raw_notional > max_notional)
-check("capped notional <= $2500", capped_notional <= max_notional + 1e-6, f"(${capped_notional:.0f})")
-
-# 13. SANITY: losing-streak breaker sort + invalidated-trade filter (v3.1)
 trades = [
-    {"netPnl": 50.0, "timestamp": "2026-10-08T00:00:00Z", "accepted": True, "invalidated": False},
-    {"netPnl": -10.0, "timestamp": "2026-10-10T00:00:00Z", "accepted": True, "invalidated": False},
-    {"netPnl": -10.0, "timestamp": "2026-10-09T00:00:00Z", "accepted": True, "invalidated": False},
-    {"netPnl": -10.0, "timestamp": "2026-10-07T00:00:00Z", "accepted": False, "invalidated": True},
+    {"netPnl": -5, "timestamp": "2026-10-12T10:00:00Z"},
+    {"netPnl": -5, "timestamp": "2026-10-12T12:00:00Z"},
+    {"netPnl": 9, "timestamp": "2026-10-11T12:00:00Z"},
+    {"netPnl": -5, "timestamp": "2026-10-12T14:00:00Z", "invalidated": True},
 ]
-trades = [t for t in trades if t.get("accepted", True) and not t.get("invalidated", False)]
-trades.sort(key=lambda t: str(t.get("timestamp", "")), reverse=True)
-consec = 0
-for t in trades:
-    if float(t.get("netPnl", 0) or 0) < 0:
-        consec += 1
-    else:
-        break
-check("losing-streak: 2 consecutive losses (invalidated trade excluded)", consec == 2, f"(got {consec})")
+n, last = hb.consecutive_losses(trades)
+check("loss streak counts newest-first, skips invalidated", n == 2 and last == "2026-10-12T12:00:00Z", f"{n} {last}")
+check("parse_iso", abs(hb.parse_iso("2026-10-12T00:00:00Z") - 1791763200.0) < 1)
+check("parse_iso nanoseconds", abs(hb.parse_iso("2026-10-12T00:00:00.123456789Z") - 1791763200.123456) < 1e-3)
+check("give-back frac < brake < 1 and >= entry budget", hb.OPEN_RISK_DAILY_FRAC <= hb.GIVEBACK_FRAC < hb.BRAKE_DAILY_FRAC < 1)
+check("_f handles junk", hb._f("x") == 0.0 and hb._f(None, 7) == 7 and hb._f("nan") == 0.0)
 
-print("=" * 64)
-if FAILURES:
-    print(f"RESULT: {len(FAILURES)} FAILURE(S): {FAILURES}")
-    sys.exit(1)
+# budget arithmetic used by process(): live 10K eval with the legacy BTC position
+dd, open_risk, new = 0.0, 0.097 * (82470 - 79703.3), 50.0
+check("legacy BTC open risk blocks new eval entries (daily budget)", dd + open_risk + new > 0.60 * 400)
+check("risk scale shrinks with drawdown, floor 50%", hb.risk_scale(0, 600) == 1.0 and
+      abs(hb.risk_scale(300, 600) - 0.5) < 1e-9 and hb.risk_scale(590, 600) == 0.5)
+
+# ── VALIDATION: live helpers == research backtest (pandas) on real data ─
+data_dir = os.getenv("BT_DATA", r"C:\Users\oegar\AppData\Local\hermes\cache\scratch\bt_data")
+files = sorted(glob.glob(os.path.join(data_dir, "*_4h.csv")))[:6]
+if files:
+    import numpy as np
+    import pandas as pd
+    mism = total = 0
+    for f in files:
+        df = pd.read_csv(f)
+        c, h, l = df["close"], df["high"], df["low"]
+        e200 = c.ewm(span=200, adjust=False, min_periods=200).mean()
+        pc = c.shift(1)
+        tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
+        atr = tr.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        hh = h.rolling(20).max().shift(1)
+        pd_sig = ((c > hh) & (c > e200)).values
+        rows = list(zip(df["open_time"], df["open"], df["high"], df["low"], df["close"], df["volume"]))
+        for t in range(1200, len(rows), 37):
+            for lim, tol in ((hb.KLINE_LIMIT, 0.003), (hb.KLINE_FALLBACK, 0.006)):
+                window = rows[max(0, t - lim + 1): t + 1]
+                mine = hb.breakout_signal(window) is not None
+                total += 1
+                if mine != bool(pd_sig[t]):
+                    near = abs(c[t] / e200[t] - 1) < tol or abs(c[t] / hh[t] - 1) < 1e-9
+                    if not near:
+                        mism += 1
+    check(f"live signal == backtest signal on {total} real windows", mism == 0, f"{mism} mismatches")
 else:
-    print("RESULT: ALL TESTS PASSED")
-    sys.exit(0)
+    print("[SKIP] validation vs backtest (no bt_data present)")
+
+
+# ── SANITY: async give-back shield + keep-alive with a fake MCP (no network) ──
+import asyncio
+
+
+class FakeKlineMCP:
+    """Serves newest-first klines like the real tool; counts calls and requested limits."""
+    def __init__(self, n=700, fail_big=False):
+        self.n, self.fail_big, self.limits = n, fail_big, []
+        self.t_last = (int(time.time() * 1000) // hb.BAR_MS) * hb.BAR_MS   # forming bar start
+
+    async def call(self, name, args, retries=5):
+        lim = args["limit"]
+        self.limits.append(lim)
+        if self.fail_big and lim > hb.KLINE_FALLBACK:
+            raise hb.MCPError("Simulator error 503: HTTP request failed")
+        k = min(lim, self.n)
+        rows = [[str(self.t_last - i * hb.BAR_MS), "1", "2", "0.5", str(100 + (self.n - i)), "5", "0"] for i in range(k)]
+        return {"list": rows}
+
+
+import time
+cb = hb.HyroBridge("x")
+fk = FakeKlineMCP()
+b1 = asyncio.run(cb.bars(fk, "ch", "ETHUSDT"))
+check("bars(): ascending, forming bar dropped", b1[-1][0] == fk.t_last - hb.BAR_MS and b1[0][0] < b1[-1][0])
+cb.fetched_at[("ETHUSDT", "240")] = 0          # force a refresh
+b2 = asyncio.run(cb.bars(fk, "ch", "ETHUSDT"))
+check("bars(): second refresh is incremental (limit 10)", fk.limits[-1] == 10, f"{fk.limits}")
+check("bars(): merge keeps history length", len(b2) == len(b1))
+asyncio.run(cb.bars(fk, "other-account", "ETHUSDT"))
+check("bars(): cache shared across accounts (no extra call)", len(fk.limits) == 2)
+fk2 = FakeKlineMCP(fail_big=True)
+b3 = asyncio.run(hb.HyroBridge("x").bars(fk2, "ch", "SOLUSDT"))
+check("bars(): falls back to 600 bars when 1000 fails", fk2.limits == [hb.KLINE_LIMIT, hb.KLINE_FALLBACK] and len(b3) >= hb.KLINE_FALLBACK - 10,
+      f"{fk2.limits} {len(b3)}")
+
+
+class FakeMCP:
+    def __init__(self):
+        self.calls = []
+
+    async def call(self, name, args):
+        self.calls.append((name, dict(args)))
+        if name == "get_instruments":
+            return {"list": [{"status": "Trading", "priceFilter": {"tickSize": "0.0001"},
+                              "lotSizeFilter": {"qtyStep": "1", "minOrderQty": "1", "minNotionalValue": "5"}}]}
+        if name == "get_tickers":
+            return {"list": [{"lastPrice": "2.5"}]}
+        return {}
+
+
+hb.DRY_RUN = False
+br = hb.HyroBridge("x")
+fm = FakeMCP()
+infos = [{"sym": "BTCUSDT", "side": "Buy", "sign": 1, "size": 0.097, "mark": 83277.0, "sl": 79703.3, "tick": "0.10"},
+         {"sym": "QNTUSDT", "side": "Sell", "sign": -1, "size": 2.14, "mark": 224.71, "sl": 238.57, "tick": "0.01"}]
+tot = sum(max(0, (i["mark"] - i["sl"]) * i["sign"] * i["size"]) for i in infos)
+new_tot = asyncio.run(br.cap_giveback(fm, "ch", infos, tot, 400.0, 0.0))
+check("shield tightens when stops allow > 70% of daily limit", new_tot <= 0.70 * 400 + 1.0, f"{tot:.0f} -> {new_tot:.0f}")
+sl_moves = {a["symbol"]: float(a["stopLoss"]) for n, a in fm.calls if n == "set_trading_stop"}
+check("shield only tightens (long SL up, short SL down)",
+      sl_moves.get("BTCUSDT", 0) > 79703.3 and sl_moves.get("QNTUSDT", 1e9) < 238.57, f"{sl_moves}")
+fm2 = FakeMCP()
+same = asyncio.run(br.cap_giveback(fm2, "ch", infos[:1], 100.0, 400.0, 0.0))
+check("shield idle when within budget", same == 100.0 and not fm2.calls)
+fm4 = FakeMCP()
+idle = asyncio.run(br.cap_giveback(fm4, "ch", infos, tot, 400.0, 161.0))
+check("shield uses intraday cushion vs 00:00 UTC equity (live case: no tightening)", idle == tot and not fm4.calls)
+fm3 = FakeMCP()
+asyncio.run(br.keepalive(fm3, "ch", set(), 5000.0, True, 1250.0, 900.0))
+order = next(a for n, a in fm3.calls if n == "place_order")
+check("keep-alive respects funded margin headroom", float(order["qty"]) * 2.5 <= 0.8 * 1250 - 900 + 2.5, f"qty {order['qty']}")
+check("keep-alive closes its position", any(n == "close_position" for n, _ in fm3.calls))
+check("keep-alive orderLinkId <= 36", len(order["orderLinkId"]) <= 36, order["orderLinkId"])
+
+print("=" * 66)
+if FAIL:
+    print(f"RESULT: {len(FAIL)} FAILURE(S): {FAIL}")
+    sys.exit(1)
+print("RESULT: ALL TESTS PASSED")

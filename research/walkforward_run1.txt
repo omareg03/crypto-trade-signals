@@ -1,0 +1,20 @@
+EVAL k3.0 risk0.35% ALL {'n': 161, 'pass%': np.float64(9.9), 'fail%': np.float64(0.6), 'open%': np.float64(89.4), 'med_days': 280.0, 'p75_days': 306.0, 'fail_daily': 1, 'fail_max': 0}
+EVAL k3.0 risk0.35% OOS {'n': 62, 'pass%': np.float64(25.8), 'fail%': np.float64(0.0), 'open%': np.float64(74.2), 'med_days': 280.0, 'p75_days': 306.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k3.0 risk0.50% ALL {'n': 161, 'pass%': np.float64(20.5), 'fail%': np.float64(0.6), 'open%': np.float64(78.9), 'med_days': 164.0, 'p75_days': 296.0, 'fail_daily': 1, 'fail_max': 0}
+EVAL k3.0 risk0.50% OOS {'n': 62, 'pass%': np.float64(38.7), 'fail%': np.float64(0.0), 'open%': np.float64(61.3), 'med_days': 272.0, 'p75_days': 312.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k3.0 risk0.75% ALL {'n': 161, 'pass%': np.float64(6.8), 'fail%': np.float64(1.9), 'open%': np.float64(91.3), 'med_days': 124.0, 'p75_days': 179.0, 'fail_daily': 3, 'fail_max': 0}
+EVAL k3.0 risk0.75% OOS {'n': 62, 'pass%': np.float64(9.7), 'fail%': np.float64(0.0), 'open%': np.float64(90.3), 'med_days': 179.0, 'p75_days': 188.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k3.0 risk1.00% ALL {'n': 161, 'pass%': np.float64(14.9), 'fail%': np.float64(22.4), 'open%': np.float64(62.7), 'med_days': 150.0, 'p75_days': 243.0, 'fail_daily': 36, 'fail_max': 0}
+EVAL k3.0 risk1.00% OOS {'n': 62, 'pass%': np.float64(8.1), 'fail%': np.float64(50.0), 'open%': np.float64(41.9), 'med_days': 154.0, 'p75_days': 357.0, 'fail_daily': 31, 'fail_max': 0}
+FUNDED5K k3.0 risk0.25% {'n': 114, 'survive%': np.float64(82.5), 'avg_paid': 70.0, 'med_paid': 0.0, 'p10': 0.0, 'p90': 275.0, 'avg_payouts': 0.26}
+FUNDED5K k3.0 risk0.50% {'n': 114, 'survive%': np.float64(77.2), 'avg_paid': 173.0, 'med_paid': 0.0, 'p10': 0.0, 'p90': 566.0, 'avg_payouts': 0.42}
+EVAL k2.0 risk0.35% ALL {'n': 161, 'pass%': np.float64(14.9), 'fail%': np.float64(0.0), 'open%': np.float64(85.1), 'med_days': 153.0, 'p75_days': 289.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k2.0 risk0.35% OOS {'n': 62, 'pass%': np.float64(22.6), 'fail%': np.float64(0.0), 'open%': np.float64(77.4), 'med_days': 284.0, 'p75_days': 307.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k2.0 risk0.50% ALL {'n': 161, 'pass%': np.float64(9.3), 'fail%': np.float64(0.0), 'open%': np.float64(90.7), 'med_days': 108.0, 'p75_days': 132.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k2.0 risk0.50% OOS {'n': 62, 'pass%': np.float64(4.8), 'fail%': np.float64(0.0), 'open%': np.float64(95.2), 'med_days': 176.0, 'p75_days': 179.0, 'fail_daily': 0, 'fail_max': 0}
+EVAL k2.0 risk0.75% ALL {'n': 161, 'pass%': np.float64(6.8), 'fail%': np.float64(13.0), 'open%': np.float64(80.1), 'med_days': 92.0, 'p75_days': 114.0, 'fail_daily': 21, 'fail_max': 0}
+EVAL k2.0 risk0.75% OOS {'n': 62, 'pass%': np.float64(0.0), 'fail%': np.float64(16.1), 'open%': np.float64(83.9), 'med_days': None, 'p75_days': None, 'fail_daily': 10, 'fail_max': 0}
+EVAL k2.0 risk1.00% ALL {'n': 161, 'pass%': np.float64(0.6), 'fail%': np.float64(12.4), 'open%': np.float64(87.0), 'med_days': 43.0, 'p75_days': 43.0, 'fail_daily': 20, 'fail_max': 0}
+EVAL k2.0 risk1.00% OOS {'n': 62, 'pass%': np.float64(1.6), 'fail%': np.float64(4.8), 'open%': np.float64(93.5), 'med_days': 43.0, 'p75_days': 43.0, 'fail_daily': 3, 'fail_max': 0}
+FUNDED5K k2.0 risk0.25% {'n': 114, 'survive%': np.float64(68.4), 'avg_paid': 170.0, 'med_paid': 216.0, 'p10': 0.0, 'p90': 475.0, 'avg_payouts': 0.57}
+FUNDED5K k2.0 risk0.50% {'n': 114, 'survive%': np.float64(77.2), 'avg_paid': 161.0, 'med_paid': 0.0, 'p10': 0.0, 'p90': 586.0, 'avg_payouts': 0.29}
