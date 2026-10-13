@@ -82,9 +82,9 @@ class SignalEngine:
         if ema9_val > ema21_val and macd_hist > 0:
             confidence = min(90, 60 + int(abs(macd_hist / current * 1000)))
             stop = current * 0.97
-            tp1 = current * 1.03
+            tp1 = current * 1.045
             tp2 = current * 1.06
-            rr = round((current * 0.03) / (current * 0.03), 2)
+            rr = round((tp1 - current) / (current - stop), 2)
             return TradeSetup(
                 symbol=symbol,
                 direction="LONG",
@@ -105,9 +105,9 @@ class SignalEngine:
         elif ema9_val < ema21_val and macd_hist < 0:
             confidence = min(90, 60 + int(abs(macd_hist / current * 1000)))
             stop = current * 1.03
-            tp1 = current * 0.97
+            tp1 = current * 0.955
             tp2 = current * 0.94
-            rr = round((current * 0.03) / (current * 0.03), 2)
+            rr = round((current - tp1) / (stop - current), 2)
             return TradeSetup(
                 symbol=symbol,
                 direction="SHORT",

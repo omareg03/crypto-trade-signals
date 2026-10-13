@@ -360,9 +360,8 @@ async def _fetch_bot_data(token: str) -> dict:
                     rules = stage.get("rules", {}) if isinstance(stage, dict) else {}
 
                     equity = float(eq_metrics.get("equity", 0) or 0)
-                    realized_pnl = float(eq_metrics.get("currentLoss", 0) or 0)
-                    # currentLoss is negative, so realized P&L = -(currentLoss)
-                    realized_pnl = -realized_pnl if realized_pnl < 0 else realized_pnl
+                    # v2.9: realized P&L = closed-trade PnL (correctly signed) from tradeMetrics
+                    realized_pnl = float(trade_metrics.get("longRealizedPnl", 0) or 0) + float(trade_metrics.get("shortRealizedPnl", 0) or 0)
 
                     # Actually currentLoss is the loss amount (positive), so PnL = -(currentLoss)
                     current_loss = float(eq_metrics.get("currentLoss", 0) or 0)
@@ -395,7 +394,7 @@ async def _fetch_bot_data(token: str) -> dict:
                         "winningTrades": winning_trades,
                         "longTrades": long_trades,
                         "shortTrades": short_trades,
-                        "drawdownPct": current_drawdown,
+                        "drawdownPct": round((current_drawdown / drawdown_limit * 100) if drawdown_limit > 0 else 0, 1),
                         "lossPct": loss_pct,
                         "targetPct": max(0, target_pct),
                         "tradingDays": 0,  # would need trade history to count

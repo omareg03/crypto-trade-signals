@@ -53,9 +53,14 @@ TOKEN_ENV_VAR = "HYRO_AGENT_TOKEN"
 # GEMINI.md rules — hardcoded for safety
 MIN_RR = 1.5
 MIN_CONFIDENCE = 60
-MAX_RISK_PCT_CHALLENGE = 2.0   # max 2% on challenge accounts (Rule 8)
+MAX_RISK_PCT_CHALLENGE = 1.0   # v2.9: 1% (was 2%) so 3 correlated losses = $300 < $400 daily DD
 MAX_RISK_PCT_FUNDED = 0.5       # max 0.5% on funded accounts (Rule 7)
 MIN_TRADING_DAYS_ONE_STEP = 5   # need 5 qualifying days
+MAX_POSITIONS_PER_ACCOUNT = 3   # Rule 11: hard cap on concurrent positions
+MAX_CORRELATED_POSITIONS = 2    # max 2 positions inside one correlation cluster
+FUNDED_MARGIN_LIMIT_PCT = 25.0  # funded margin limit (% of initial balance, Hyro rule sheet)
+DAILY_DD_SAFETY_BUFFER = 0.8    # stop entering when drawdown hits 80% of its limit
+DRY_RUN = os.getenv("DRY_RUN", "0") == "1"  # v2.9: if "1", scan+validate but never place orders
 
 # Blacklisted assets (Rule 90-92)
 # NEAR and LINK are blacklisted as BASE assets (e.g., NEARUSDT, LINKUSDT)
@@ -63,6 +68,24 @@ MIN_TRADING_DAYS_ONE_STEP = 5   # need 5 qualifying days
 # JPY pairs are blacklisted (forex only, not relevant on Hyro but kept for safety)
 BLACKLISTED_BASES = {"NEAR", "LINK"}  # block these coins specifically
 BLACKLISTED_STANDALONE = {"USDT"}  # only block if symbol IS exactly "USDT", not "BTCUSDT"
+
+# v2.9: Correlation clusters — symbols that move together count as ONE risk unit (Rule 11)
+CORRELATION_GROUPS = {
+    "BTC": {"BTCUSDT", "ORDIUSDT", "BCHUSDT", "CETUSDT"},
+    "ETH": {"ETHUSDT", "ARBUSDT", "OPUSDT", "LDOUSDT", "CRVUSDT", "UNIUSDT", "AAVEUSDT", "ENASUSDT"},
+    "SOL": {"SOLUSDT", "JTOUSDT", "PYTHUSDT", "JUPUSDT", "WIFUSDT", "1000SOLUSDT"},
+    "MEME": {"PEPEUSDT", "1000PEPEUSDT", "SHIBUSDT", "1000SHIBUSDT", "DOGEUSDT",
+             "FLOKIUSDT", "1000FLOKIUSDT", "BONKUSDT", "1000BONKUSDT", "MEMEUSDT"},
+}
+
+
+def get_correlation_group(symbol: str) -> str:
+    """Return the correlation cluster for a symbol, or the symbol itself if uncorrelated."""
+    sym = symbol.upper()
+    for group, members in CORRELATION_GROUPS.items():
+        if sym in members:
+            return group
+    return sym
 
 # Symbols to scan on Hyro (crypto only — HyroTrader is a crypto prop firm)
 # This is the SEED list — the bot also dynamically discovers available symbols
@@ -253,6 +276,17 @@ class HyroMCPClient:
 
     # ─── High-level helpers ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_error(result) -> bool:
+        """Detect error/rate-limit responses wrapped as {'raw': '...'}."""
+        if isinstance(result, dict):
+            raw = result.get("raw", "")
+            if isinstance(raw, str):
+                rl = raw.lower()
+                if "error" in rl or "rate-limit" in rl or "retry" in rl or "no longer active" in rl or "not found" in rl:
+                    return True
+        return False
+
     async def list_challenges(self) -> list[dict]:
         """List all ongoing challenges."""
         result = await self.call_tool("list_challenges", {})
@@ -323,16 +357,19 @@ class HyroMCPClient:
         """Get wallet balance, equity, available margin."""
         return await self.call_tool("get_wallet_balance", {"challengePublicId": challenge_id})
 
-    async def list_positions(self, challenge_id: str) -> list[dict]:
-        """List open positions."""
+    async def list_positions(self, challenge_id: str):
+        """List open positions. Returns None on error (fail-safe signal)."""
         result = await self.call_tool("list_positions", {"challengePublicId": challenge_id})
+        if self._is_error(result):
+            return None
         if isinstance(result, dict):
             for key in ("positions", "list", "data"):
                 if key in result:
-                    return result[key]
+                    result = result[key]
+                    break
         if isinstance(result, list):
-            return result
-        return [result] if result else []
+            return [p for p in result if isinstance(p, dict)]
+        return None
 
     async def list_open_orders(self, challenge_id: str, symbol: str = None) -> list[dict]:
         """List pending/open orders."""
@@ -575,6 +612,9 @@ class HyroBridge:
 
         # Step 2: Get stage metrics (THE rule-budget tool)
         metrics = await self.client.get_stage_metrics(stage_id)
+        if self.client._is_error(metrics):
+            log.warning("Challenge %s: could not read stage metrics (rate-limit/error) — skipping (fail-safe)", ch_id)
+            return
         log.info("Challenge %s metrics: %s", ch_id, json.dumps(metrics, indent=2)[:800])
 
         # Check if challenge is halted
@@ -625,12 +665,43 @@ class HyroBridge:
             balance = float(stage_equity or init_bal or 0)
         log.info("Challenge %s: balance=$%.2f, type=%s, funded=%s", ch_id, balance, account_type, is_funded)
 
+        # v2.9: Extract rule budgets (daily DD, total loss, margin limit) from stage rules
+        rules = {}
+        if isinstance(stage, dict):
+            rules = stage.get("rules", {}) or {}
+        drawdown_limit = float(rules.get("drawdownLimit", 0) or 0)
+        equity_loss_limit = float(rules.get("equityLossLimit", 0) or 0)
+        margin_limit_pct = FUNDED_MARGIN_LIMIT_PCT if is_funded else 0.0
+        rule_sheet = stage.get("ruleSheet", []) if isinstance(stage, dict) else []
+        if isinstance(rule_sheet, list):
+            for _rs in rule_sheet:
+                if isinstance(_rs, dict) and _rs.get("key") == "marginLimit":
+                    try:
+                        margin_limit_pct = float(_rs.get("value", margin_limit_pct))
+                    except (TypeError, ValueError):
+                        pass
+        initial_balance = float(details.get("initialBalance", balance) or balance) if isinstance(details, dict) else balance
+        margin_limit = initial_balance * (margin_limit_pct / 100.0) if margin_limit_pct > 0 else 0.0
+
+        current_drawdown = 0.0
+        current_loss = 0.0
+        if isinstance(metrics, dict):
+            _em = metrics.get("equityMetrics") or {}
+            if isinstance(_em, dict):
+                current_drawdown = float(_em.get("currentDrawdown", 0) or 0)
+                current_loss = float(_em.get("currentLoss", 0) or 0)
+        log.info("  Rule budget: DD $%.2f/$%.2f | Loss $%.2f/$%.2f | Margin limit $%.2f",
+                 current_drawdown, drawdown_limit, current_loss, equity_loss_limit, margin_limit)
+
         if balance <= 0:
             log.warning("Challenge %s: zero balance — skipping", ch_id)
             return
 
         # Step 3: Check existing positions and manage them (trailing stops, PnL logging)
         positions = await self.client.list_positions(ch_id)
+        if positions is None:
+            log.warning("Challenge %s: could not read positions (rate-limit/error) — skipping (fail-safe)", ch_id)
+            return
         existing_symbols = set()
         if positions:
             for pos in positions:
@@ -640,6 +711,21 @@ class HyroBridge:
                         existing_symbols.add(sym)
                         pnl = pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", "N/A")))
                         log.info("  Open position: %s %s | PnL: %s", sym, pos.get("side", ""), pnl)
+
+        # v2.9: Compute existing margin exposure and correlation counts
+        existing_margin = 0.0
+        correlation_counts = {}
+        for _pos in (positions or []):
+            if not isinstance(_pos, dict):
+                continue
+            _sym = _pos.get("symbol", "")
+            existing_margin += float(_pos.get("positionIM", _pos.get("positionValue", 0)) or 0)
+            if _sym:
+                _grp = get_correlation_group(_sym)
+                correlation_counts[_grp] = correlation_counts.get(_grp, 0) + 1
+        if margin_limit > 0 and existing_margin > margin_limit:
+            log.warning("  ⚠️ MARGIN BREACH: existing margin $%.2f > limit $%.2f — will NOT add positions",
+                        existing_margin, margin_limit)
 
         # Manage existing positions (trailing stops, breakeven moves)
         await self._manage_existing_positions(ch_id, stage_id)
@@ -993,12 +1079,42 @@ class HyroBridge:
         sl_str = fmt_price(sl)
         tp_str = fmt_price(tp)
 
+        # v2.9: ENTRY GUARDS — hard stops before any new position is placed
+        new_notional = qty * entry
+        if drawdown_limit > 0 and (current_drawdown + risk_usd) > (DAILY_DD_SAFETY_BUFFER * drawdown_limit):
+            log.warning("  🛑 DAILY DD GUARD: DD $%.2f + risk $%.2f > %.0f%% of $%.2f — skipping %s",
+                        current_drawdown, risk_usd, DAILY_DD_SAFETY_BUFFER * 100, drawdown_limit, symbol)
+            return
+        if equity_loss_limit > 0 and (current_loss + risk_usd) > (DAILY_DD_SAFETY_BUFFER * equity_loss_limit):
+            log.warning("  🛑 TOTAL LOSS GUARD: loss $%.2f + risk $%.2f > %.0f%% of $%.2f — skipping %s",
+                        current_loss, risk_usd, DAILY_DD_SAFETY_BUFFER * 100, equity_loss_limit, symbol)
+            return
+        if margin_limit > 0 and (existing_margin + new_notional) > margin_limit:
+            log.warning("  🛑 MARGIN GUARD: margin $%.2f + new $%.2f > $%.2f — skipping %s",
+                        existing_margin, new_notional, margin_limit, symbol)
+            return
+        _grp = get_correlation_group(symbol)
+        if correlation_counts.get(_grp, 0) >= MAX_CORRELATED_POSITIONS:
+            log.warning("  🛑 CORRELATION GUARD: group %s at %d (max %d) — skipping %s",
+                        _grp, correlation_counts.get(_grp, 0), MAX_CORRELATED_POSITIONS, symbol)
+            return
+        if len(positions or []) >= MAX_POSITIONS_PER_ACCOUNT:
+            log.warning("  🛑 POSITION COUNT GUARD: %d positions (max %d) — skipping %s",
+                        len(positions or []), MAX_POSITIONS_PER_ACCOUNT, symbol)
+            return
+
         # Map direction
         side = "Buy" if best["direction"] == "LONG" else "Sell"
 
         log.info("  ✅ SIGNAL: %s %s | %s | R:R 1:%.2f | Conf %d%% | Entry %.6f | SL %.6f | TP %.6f | Qty %s",
                  symbol, best["direction"], best["strategy"],
                  rr, best["confidence"], entry, sl, tp, qty_str)
+
+        # v2.9: DRY RUN — full scan + guards, but never place a real order
+        if DRY_RUN:
+            log.info("  🧪 DRY RUN — would place: %s %s qty %s @ %s (SL %s | TP %s)",
+                     symbol, side, qty_str, entry_str, sl_str, tp_str)
+            return
 
         # Preview the order first
         try:
@@ -1051,7 +1167,7 @@ class HyroBridge:
 
             symbol = pos.get("symbol", "")
             side = pos.get("side", "")
-            entry_price = float(pos.get("entryPrice", pos.get("entry", 0)) or 0)
+            entry_price = float(pos.get("avgPrice", pos.get("entryPrice", pos.get("entry", 0))) or 0)
             mark_price = float(pos.get("markPrice", pos.get("mark", 0)) or 0)
             unrealized_pnl = float(pos.get("unrealisedPnl", pos.get("unrealizedPnl", pos.get("pnl", 0))) or 0)
             qty = float(pos.get("size", pos.get("qty", 0)) or 0)
