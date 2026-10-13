@@ -999,9 +999,9 @@ class HyroBridge:
             if best["confidence"] < 65 or best["rr"] < 1.6:
                 log.info("  🛡️ FUNDED ACCOUNT — stricter filter: conf %.0f%% < 65 or R:R %.2f < 1.6 — skipping", best["confidence"], best["rr"])
                 return
-            log.info("  🛡️ FUNDED ACCOUNT — high-confidence signal approved (0.5%% risk)")
+            log.info("  🛡️ FUNDED ACCOUNT — high-confidence signal approved (0.5% risk)")
         else:
-            log.info("  🚀 CHALLENGE ACCOUNT — signal approved (2%% risk)")
+            log.info("  🚀 CHALLENGE ACCOUNT — signal approved (1% risk)")
 
         # Step 7: Calculate position size and place the order
         symbol = best["symbol"]
