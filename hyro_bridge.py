@@ -499,16 +499,21 @@ class HyroBridge:
         # 2) manage open positions (initial stop if missing, chandelier trail on closed bars)
         open_risk, infos = 0.0, []
         for p in positions:
+            if scan:  # already managed in pass 1 of this cycle — only measure the risk
+                open_risk += self.give_back(p)
+                continue
             gb, info = await self.manage(mcp, ch, p, pos_meta.get(p["symbol"]))
             open_risk += gb
             if info:
                 infos.append(info)
-        open_risk = await self.cap_giveback(mcp, ch, infos, open_risk, daily_lim, cushion)
+        if not scan:
+            open_risk = await self.cap_giveback(mcp, ch, infos, open_risk, daily_lim, cushion)
         margin_used = sum(_f(p.get("positionIM")) for p in positions)
         cpv_used = sum(_f(p.get("positionValue")) for p in positions)
 
         # 3) stale entry limits (non reduce-only) — cancel with symbol (required by the tool)
-        await self.cancel_stale(mcp, ch)
+        if not scan:
+            await self.cancel_stale(mcp, ch)
 
         # 4) gates for new entries
         trades = await mcp.call("get_stage_trades", {"stagePublicId": stage_id, "pageSize": 50})
@@ -607,6 +612,13 @@ class HyroBridge:
                 margin_used += placed[0]
                 cpv_used += placed[1]
 
+    @staticmethod
+    def give_back(p) -> float:
+        """$ lost from the current mark if the stop fills (10% of notional if no stop)."""
+        size, mark, sl = _f(p.get("size")), _f(p.get("markPrice")), _f(p.get("stopLoss"))
+        sign = 1 if p.get("side") == "Buy" else -1
+        return max(0.0, (mark - sl) * sign * size) if sl > 0 else 0.10 * mark * size
+
     async def manage(self, mcp, ch, p, meta):
         """Trail/repair the stop. Returns (give_back_usd, info) where give_back = (mark - stop) x size."""
         sym, side = p["symbol"], p.get("side")
@@ -635,7 +647,9 @@ class HyroBridge:
         if new_sl:
             mode = ROUND_DOWN if side == "Buy" else ROUND_UP
             sl_str = round_price(new_sl, inst["tickSize"], mode)
-            if DRY_RUN:
+            if abs(float(sl_str) - sl) < 1e-12:
+                pass  # rounds to the current stop — nothing to send
+            elif DRY_RUN:
                 log.info("  [DRY] %s %s: would move SL %s -> %s (%s)", sym, side, p.get("stopLoss"), sl_str, why)
             else:
                 try:
