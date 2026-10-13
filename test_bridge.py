@@ -1,5 +1,5 @@
 """
-test_bridge.py — QA test suite for the QuantumTrader <-> HyroTrader bridge (v2.9).
+test_bridge.py — QA test suite for the QuantumTrader <-> HyroTrader bridge (v3.0).
 
 Run:  python test_bridge.py   (requires Python 3.13 with mcp + httpx2 installed)
 
@@ -39,7 +39,10 @@ check("MIN_RR == 1.5", hyro_bridge.MIN_RR == 1.5)
 check("MAX_POSITIONS_PER_ACCOUNT == 3", hyro_bridge.MAX_POSITIONS_PER_ACCOUNT == 3)
 check("MAX_CORRELATED_POSITIONS == 2", hyro_bridge.MAX_CORRELATED_POSITIONS == 2)
 check("FUNDED_MARGIN_LIMIT_PCT == 25.0", hyro_bridge.FUNDED_MARGIN_LIMIT_PCT == 25.0)
-check("DAILY_DD_SAFETY_BUFFER == 0.8", hyro_bridge.DAILY_DD_SAFETY_BUFFER == 0.8)
+check("DAILY_DD_SAFETY_BUFFER == 0.5 (v3.0)", hyro_bridge.DAILY_DD_SAFETY_BUFFER == 0.5)
+check("MAX_CONSECUTIVE_LOSSES == 3", hyro_bridge.MAX_CONSECUTIVE_LOSSES == 3)
+check("COOLDOWN_HOURS == 6", hyro_bridge.COOLDOWN_HOURS == 6)
+check("VERSION == 3.0.0", hyro_bridge.VERSION == "3.0.0")
 
 # 2. REGRESSION: blacklist — must match BASE by prefix, not substring
 check("blacklist NEAR", GeminiRules.is_blacklisted("NEARUSDT")[0] is True)
@@ -83,6 +86,22 @@ if tf2 is not None:
     check("TF SHORT R:R == 1.5", abs(tf2.risk_reward - 1.5) < 0.01, f"(got {tf2.risk_reward:.2f})")
 else:
     print("[SKIP] TF SHORT not triggered by synthetic data")
+
+# 6b. VERIFICATION: Momentum now has a SHORT branch (v3.0)
+prices_mom_dn = [100 + (1.5 if i % 2 == 0 else -2.5) for i in range(60)]  # RSI ~48, MACD < 0
+mom = engine._momentum("BTC-USD", prices_mom_dn)
+if mom is not None:
+    check("Momentum SHORT generated", mom.direction == "SHORT")
+    check("Momentum SHORT R:R == 1.6", abs(mom.risk_reward - 1.6) < 0.01, f"(got {mom.risk_reward:.2f})")
+else:
+    print("[SKIP] Momentum SHORT not triggered")
+prices_mom_up = [100 + (-1.5 if i % 2 == 0 else 2.5) for i in range(60)]  # RSI ~52, MACD > 0
+mom2 = engine._momentum("BTC-USD", prices_mom_up)
+if mom2 is not None:
+    check("Momentum LONG generated (regression)", mom2.direction == "LONG")
+    check("Momentum LONG R:R == 1.6", abs(mom2.risk_reward - 1.6) < 0.01, f"(got {mom2.risk_reward:.2f})")
+else:
+    print("[SKIP] Momentum LONG not triggered")
 
 # 7. VERIFICATION: avgPrice fix (trailing stops now engage)
 pos = {"avgPrice": "82922.60", "markPrice": "81823.53", "size": "0.016",

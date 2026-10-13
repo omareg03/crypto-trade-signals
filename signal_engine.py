@@ -234,6 +234,25 @@ class SignalEngine:
                 match_trader_symbol=mt_sym,
                 cleo_symbol=cleo_sym
             )
+        # v2.10: Strong downward momentum — RSI 30-50 + negative MACD (SHORT)
+        elif 30 < rsi_val < 50 and macd_hist < 0:
+            confidence = min(85, 55 + int(50 - rsi_val))
+            return TradeSetup(
+                symbol=symbol,
+                direction="SHORT",
+                strategy="Momentum",
+                confidence=confidence,
+                entry_price=current,
+                stop_loss=current * 1.025,
+                take_profit_1=current * 0.96,
+                take_profit_2=current * 0.92,
+                risk_reward=round(0.04 / 0.025, 2),
+                reasoning=f"Momentum: RSI={rsi_val:.1f} (bearish zone), MACD hist={hist_str}",
+                display_name=display_name,
+                category=category,
+                match_trader_symbol=mt_sym,
+                cleo_symbol=cleo_sym
+            )
         return None
 
     def score_symbol(self, symbol: str, prices: List[float]) -> Optional[TradeSetup]:

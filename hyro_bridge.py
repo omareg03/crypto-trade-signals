@@ -59,8 +59,11 @@ MIN_TRADING_DAYS_ONE_STEP = 5   # need 5 qualifying days
 MAX_POSITIONS_PER_ACCOUNT = 3   # Rule 11: hard cap on concurrent positions
 MAX_CORRELATED_POSITIONS = 2    # max 2 positions inside one correlation cluster
 FUNDED_MARGIN_LIMIT_PCT = 25.0  # funded margin limit (% of initial balance, Hyro rule sheet)
-DAILY_DD_SAFETY_BUFFER = 0.8    # stop entering when drawdown hits 80% of its limit
+DAILY_DD_SAFETY_BUFFER = 0.5    # v2.10: stop entering when drawdown hits 50% of its limit (stricter)
+MAX_CONSECUTIVE_LOSSES = 3      # v2.10: pause account after N consecutive losing trades
+COOLDOWN_HOURS = 6              # v2.10: cooldown before resuming after a losing streak
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"  # v2.9: if "1", scan+validate but never place orders
+VERSION = "3.0.0"  # v3.0: momentum short branch, losing-streak circuit breaker, hard trend rejection, stricter DD guard
 
 # Blacklisted assets (Rule 90-92)
 # NEAR and LINK are blacklisted as BASE assets (e.g., NEARUSDT, LINKUSDT)
@@ -727,6 +730,33 @@ class HyroBridge:
             log.warning("  ⚠️ MARGIN BREACH: existing margin $%.2f > limit $%.2f — will NOT add positions",
                         existing_margin, margin_limit)
 
+        # v2.10: Losing-streak circuit breaker — stop after N consecutive losses
+        try:
+            _trades = await self.client.get_stage_trades(stage_id)
+            if isinstance(_trades, dict):
+                _trades = _trades.get("data", _trades.get("list", []))
+            _trades = [t for t in (_trades or []) if isinstance(t, dict)]
+            _consec = 0
+            _last_ts = None
+            for _t in _trades:
+                if float(_t.get("netPnl", 0) or 0) < 0:
+                    _consec += 1
+                    if _last_ts is None:
+                        _last_ts = _t.get("timestamp")
+                else:
+                    break
+            if _consec >= MAX_CONSECUTIVE_LOSSES and _last_ts:
+                try:
+                    _last_dt = datetime.fromisoformat(str(_last_ts).replace("Z", "+00:00"))
+                    if (datetime.now(timezone.utc) - _last_dt).total_seconds() < COOLDOWN_HOURS * 3600:
+                        log.warning("  🧊 LOSING STREAK: %d consecutive losses — COOLING OFF for %dh (%s)",
+                                    _consec, COOLDOWN_HOURS, ch_id)
+                        return
+                except Exception:
+                    pass
+        except Exception as _e:
+            log.debug("  Could not check losing streak: %s", _e)
+
         # Manage existing positions (trailing stops, breakeven moves)
         await self._manage_existing_positions(ch_id, stage_id)
 
@@ -896,16 +926,20 @@ class HyroBridge:
                 except Exception:
                     pass
 
-                # Regime filter: penalize signals fighting the 4H trend
+                # v2.10: Regime filter — hard-reject signals fighting the 4H trend
+                fighting = False
                 if trend_direction and trend_direction != "RANGE":
                     if best_symbol_signal["direction"] == trend_direction:
                         best_symbol_signal["score"] += 20  # aligned with trend
                         log.info("  ✅ %s signal ALIGNED with 4H %s trend (+20 bonus)", symbol, trend_direction)
                     else:
-                        best_symbol_signal["score"] -= 15  # fighting the trend
-                        log.info("  ⚠️ %s signal FIGHTING 4H %s trend (-15 penalty)", symbol, trend_direction)
+                        fighting = True
+                        log.info("  🚫 %s signal FIGHTING 4H %s trend — REJECTED", symbol, trend_direction)
                 elif trend_direction == "RANGE":
                     best_symbol_signal["score"] += 5  # range = both directions OK
+
+                if fighting:
+                    continue
 
                 # v2.7: Volume confirmation
                 try:
@@ -1275,6 +1309,7 @@ async def main():
     log.info("=" * 70)
     log.info("  QuantumTrader ↔ HyroTrader MCP Bridge")
     log.info("  Automated Crypto Trading on Your Hyro Challenges")
+    log.info("  Version: %s", VERSION)
     log.info("=" * 70)
     log.info("  Legal: HyroTrader allows own-strategy trading bots.")
     log.info("  This bot uses YOUR signal engine, YOUR rules, YOUR risk management.")
