@@ -26,7 +26,7 @@ services:
       - key: SCAN_INTERVAL
         value: 600
       - key: RISK_PCT_EVAL
-        value: 0.5
+        value: 0.40
       - key: RISK_PCT_FUNDED
         value: 0.5
       - key: HYRO_AGENT_TOKEN

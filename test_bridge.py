@@ -31,7 +31,7 @@ print(f"QA SUITE — hyro_bridge v{hb.VERSION}")
 print("=" * 66)
 
 # ── SMOKE ───────────────────────────────────────────────────────────────
-check("version 3.2.0", hb.VERSION == "3.2.0")
+check("version 3.2.3", hb.VERSION == "3.2.3")
 check("4H interval", hb.INTERVAL == "240" and hb.BAR_MS == 14_400_000)
 check("strategy constants", (hb.DONCHIAN_N, hb.EMA_TREND, hb.STOP_ATR, hb.TRAIL_ATR) == (20, 200, 3.0, 4.5))
 check("kline limit >= 600 (EMA200 convergence)", hb.KLINE_LIMIT >= 600)
@@ -245,11 +245,43 @@ fm4 = FakeMCP()
 idle = asyncio.run(br.cap_giveback(fm4, "ch", infos, tot, 400.0, 161.0))
 check("shield uses intraday cushion vs 00:00 UTC equity (live case: no tightening)", idle == tot and not fm4.calls)
 fm3 = FakeMCP()
-asyncio.run(br.keepalive(fm3, "ch", set(), 5000.0, True, 1250.0, 900.0))
+asyncio.run(br.keepalive(fm3, "ch", set(), 5000.0, True, 1250.0, 700.0))
 order = next(a for n, a in fm3.calls if n == "place_order")
-check("keep-alive respects funded margin headroom", float(order["qty"]) * 2.5 <= 0.8 * 1250 - 900 + 2.5, f"qty {order['qty']}")
+check("keep-alive respects funded margin headroom", float(order["qty"]) * 2.5 <= hb.MARGIN_ENTRY_FRAC * 5000 - 700 + 2.5, f"qty {order['qty']}")
 check("keep-alive closes its position", any(n == "close_position" for n, _ in fm3.calls))
 check("keep-alive orderLinkId <= 36", len(order["orderLinkId"]) <= 36, order["orderLinkId"])
+
+# ── v3.2.2: effective margin + exposure reduction + cross-account rotation ──
+# Req 2 — never trust positionIM alone (Bybit can return "" or "0" or omit it).
+check("effective margin floors positionIM=0 at notional",
+      abs(hb._effective_margin({"positionIM": "0", "size": "28", "markPrice": "59.57"}) - 1667.96) < 1e-6)
+check("effective margin floors missing positionIM at notional",
+      abs(hb._effective_margin({"size": "0.016", "avgPrice": "82922.6"}) - 1326.7616) < 1e-6)
+check("effective margin keeps larger positionIM",
+      abs(hb._effective_margin({"positionIM": "2000", "size": "1", "markPrice": "100"}) - 2000.0) < 1e-9)
+
+# Regression: the funded 5K died from over-exposure — a manual 28-LTC short (33% notional)
+# plus the bot's OP long = $1,844 margin vs a $1,250 cap. reduce_exposure (18% force / 15% target
+# of a $5K initial) must close the biggest position first.
+fm_exp = FakeMCP()
+over = [{"symbol": "LTCUSDT", "positionIM": "1667.96", "size": "28", "markPrice": "59.57", "side": "Sell"},
+        {"symbol": "OPUSDT", "positionIM": "176.44", "size": "1139", "markPrice": "0.1549", "side": "Buy"}]
+red = asyncio.run(br.reduce_exposure(fm_exp, "ch", over, 5000.0))
+check("exposure reduce fires when over 18% of init", red <= 0.15 * 5000 + 1e-9, f"${red:.2f}")
+closed_syms = [a["symbol"] for n, a in fm_exp.calls if n == "close_position"]
+check("exposure reduce closes biggest first", closed_syms and closed_syms[0] == "LTCUSDT", f"{closed_syms}")
+fm_exp2 = FakeMCP()
+under = [{"symbol": "OPUSDT", "positionIM": "176.44", "size": "1139", "markPrice": "0.1549", "side": "Buy"}]
+red2 = asyncio.run(br.reduce_exposure(fm_exp2, "ch", under, 5000.0))
+check("exposure reduce idle when under 18% of init", red2 == 176.44 and not fm_exp2.calls, f"${red2}")
+
+# cross-account de-dup (v3.2.3 replaces v3.2.2 rotation): a coin held by ANY account is dropped for all
+check("de-dup drops coins held by any account",
+      hb._dedup_todo(["BTCUSDT", "ETHUSDT", "SOLUSDT"], {"SOLUSDT"}, {"BTCUSDT"}) == ["ETHUSDT"])
+check("de-dup no-op when global_held empty",
+      hb._dedup_todo(["BTCUSDT", "ETHUSDT"], set(), None) == ["BTCUSDT", "ETHUSDT"])
+check("de-dup drops a lone breakout for the 2nd account",
+      hb._dedup_todo(["OPUSDT"], set(), {"OPUSDT"}) == [])
 
 print("=" * 66)
 if FAIL:

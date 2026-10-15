@@ -33,7 +33,7 @@ import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
-VERSION = "3.2.0"
+VERSION = "3.2.3"
 MCP_SERVER_URL = "https://mcp-public.hyro.trade/mcp"
 TOKEN_ENV_VAR = "HYRO_AGENT_TOKEN"
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
@@ -54,17 +54,21 @@ REGIME_SMA = 50
 REGIME_BAND = 0.005
 
 # ─── Risk parameters (from the walk-forward prop-firm simulation) ─────────────
-RISK_PCT_EVAL = float(os.getenv("RISK_PCT_EVAL", "0.50"))      # % of initial balance per trade
+RISK_PCT_EVAL = float(os.getenv("RISK_PCT_EVAL", "0.40"))      # % of initial balance per trade (surviving eval: max 1 pos)
 RISK_PCT_FUNDED = float(os.getenv("RISK_PCT_FUNDED", "0.50"))  # % of initial balance per trade (GEMINI rule 7)
 MAX_POSITIONS = 3
+MAX_POSITIONS_EVAL = 1          # surviving eval account: hard cap of 1 open position
 MAX_PER_CLUSTER = 2
 OPEN_RISK_DAILY_FRAC = 0.60      # today's DD + open risk + new risk <= 60% of the daily limit
 OPEN_RISK_TOTAL_FRAC = 0.70      # total loss + open risk + new risk <= 70% of the max-loss limit
 GIVEBACK_FRAC = 0.70             # all stops hit => today's DD stays <= 70% of the daily limit
 BRAKE_DAILY_FRAC = 0.75          # flatten everything if today's DD reaches 75% of the daily limit
 MAX_NOTIONAL_PCT = 25.0          # single-position notional cap, % of equity
-MARGIN_USE_FRAC = 0.80           # funded: total initial margin <= 80% of marginLimit
+MARGIN_ENTRY_FRAC = 0.16         # funded: entry gate — total effective margin <= 16% of initial balance
+MARGIN_TRIM_FRAC = 0.18          # funded: force-trim — total effective margin > 18% of initial balance
+MARGIN_TRIM_TARGET_FRAC = 0.15   # funded: trim target — bring margin back under 15% of initial balance
 CPV_USE_FRAC = 0.80              # funded: total notional <= 80% of cpvMultiplier x initial
+GIVEBACK_KILL_FRAC = 0.02        # flatten all + pause until next day if intraday give-back >= 2% of initial
 MIN_NOTIONAL_PCT_INITIAL = 5.0   # Hyro trading-day rule: notional >= 5% of initial balance
 LOSS_STREAK_N = 6
 LOSS_STREAK_PAUSE_H = 24
@@ -124,6 +128,22 @@ def _f(x, default=0.0) -> float:
         return v if math.isfinite(v) else default
     except (TypeError, ValueError):
         return default
+
+
+def _effective_margin(p) -> float:
+    """Effective initial margin for one position. Never trust `positionIM` alone — Bybit/Match-Trader
+    can return '' or '0' or omit it. Floor it at notional / leverage (== notional at 1x, which this
+    account trades at)."""
+    im = _f(p.get("positionIM"))
+    notional = _f(p.get("size")) * (_f(p.get("markPrice")) or _f(p.get("avgPrice")))
+    lev = max(1.0, _f(p.get("leverage"), 1.0))
+    return max(im, notional / lev)
+
+
+def _dedup_todo(todo: list, held, global_held) -> list:
+    """Drop coins held by ANY account (cross-account de-dup; replaces per-account rotation)."""
+    exclude = set(held) | set(global_held or ())
+    return [s for s in todo if s not in exclude]
 
 
 def parse_klines(result) -> list:
@@ -373,6 +393,7 @@ class HyroBridge:
         self.cache = {}            # (symbol, interval) -> ascending bars (shared by all accounts)
         self.fetched_at = {}       # (symbol, interval) -> unix time of last refresh
         self.scanned = {}          # (challenge, bar_ts) -> symbols already evaluated for that bar
+        self.paused_until = {}     # challenge -> unix time (new entries blocked until then)
 
     # ── data ──────────────────────────────────────────────────────────────
     async def _klines(self, mcp, ch, symbol, interval, limit):
@@ -440,17 +461,18 @@ class HyroBridge:
                     continue
                 active.append(cid)
             # pass 1 protects every account (stops, brake, housekeeping) before any slow market scan
+            global_held = set()
             for scan in (False, True):
-                for cid in active:
+                for idx, cid in enumerate(active):
                     try:
-                        await self.process(mcp, cid, scan=scan)
+                        await self.process(mcp, cid, scan=scan, acct_idx=idx, global_held=global_held)
                     except MCPError as e:
                         log.warning("[%s] %s pass skipped (fail-safe): %s", cid, "scan" if scan else "manage", e)
                     except Exception as e:
                         log.error("[%s] unexpected error: %s", cid, e, exc_info=True)
             log.info("SCAN CYCLE END — %d MCP calls", mcp.calls)
 
-    async def process(self, mcp, ch, scan=True):
+    async def process(self, mcp, ch, scan=True, acct_idx=0, global_held=None):
         det = await mcp.call("get_challenge", {"challengePublicId": ch})
         stage = det.get("currentStage") or {}
         stage_id = stage.get("publicId")
@@ -458,6 +480,7 @@ class HyroBridge:
             log.info("[%s] stage not active — skipped", ch)
             return
         funded = str(stage.get("type", "")).lower() == "funded"
+        max_pos = MAX_POSITIONS_EVAL if not funded else MAX_POSITIONS
         init = _f(det.get("initialBalance"))
         rules = stage.get("rules") or {}
         daily_lim = _f(rules.get("drawdownLimit"), 0.04 * init)
@@ -478,6 +501,8 @@ class HyroBridge:
 
         pr = await mcp.call("list_positions", {"challengePublicId": ch})
         positions = [p for p in (pr.get("list", []) if isinstance(pr, dict) else []) if _f(p.get("size")) > 0]
+        if global_held is not None:
+            global_held.update(p["symbol"] for p in positions)
         tag = "FUNDED" if funded else "EVAL"
         log.info("[%s %s] equity $%.2f | DD today $%.2f/$%.2f | loss $%.2f/$%.2f | positions %d | days %s",
                  tag, ch[:8], equity, dd_today, daily_lim, loss_tot, loss_lim, len(positions),
@@ -496,6 +521,22 @@ class HyroBridge:
                     log.error("  BRAKE could not close %s: %s", p["symbol"], str(e)[:160])
             return
 
+        # 1b) Rule B — intraday give-back kill switch (the v3.1 give-back death mode).
+        # If the account has given back >= 2% of initial from its 00:00 UTC pivot, flatten all
+        # positions and pause new entries until 00:00 UTC the next day.
+        if positions and dd_today >= GIVEBACK_KILL_FRAC * init:
+            log.warning("[%s] GIVE-BACK KILL: DD $%.2f >= %.0f%% of init — flattening + pause", ch[:8],
+                        dd_today, GIVEBACK_KILL_FRAC * 100)
+            for p in positions:
+                try:
+                    if not DRY_RUN:
+                        await mcp.call("close_position", {"challengePublicId": ch, "symbol": p["symbol"]})
+                    log.warning("  closed %s", p["symbol"])
+                except MCPError as e:
+                    log.error("  kill could not close %s: %s", p["symbol"], str(e)[:160])
+            self.paused_until[ch] = (int(time.time() // 86400) + 1) * 86400
+            return
+
         # 2) manage open positions (initial stop if missing, chandelier trail on closed bars)
         open_risk, infos = 0.0, []
         for p in positions:
@@ -508,8 +549,15 @@ class HyroBridge:
                 infos.append(info)
         if not scan:
             open_risk = await self.cap_giveback(mcp, ch, infos, open_risk, daily_lim, cushion)
-        margin_used = sum(_f(p.get("positionIM")) for p in positions)
+        margin_used = sum(_effective_margin(p) for p in positions)
         cpv_used = sum(_f(p.get("positionValue")) for p in positions)
+
+        # 2b) exposure reduction — if total margin is already over the funded cap (for ANY
+        # reason: legacy positions, manual trades the entry guard can't see), close the
+        # biggest exposure first. v3.2 only guarded NEW entries; this cuts existing
+        # over-exposure before a 2nd breach kills the account.
+        if not scan and funded and margin_lim > 0:
+            margin_used = await self.reduce_exposure(mcp, ch, positions, init)
 
         # 3) stale entry limits (non reduce-only) — cancel with symbol (required by the tool)
         if not scan:
@@ -530,6 +578,10 @@ class HyroBridge:
                 log.warning("[%s] keep-alive failed: %s", ch[:8], e)
         if not scan:
             return
+        if time.time() < self.paused_until.get(ch, 0):
+            log.info("[%s] paused (give-back kill) until %s", ch[:8],
+                     datetime.fromtimestamp(self.paused_until[ch], timezone.utc).strftime("%H:%M UTC"))
+            return
         n_loss, last_loss_ts = consecutive_losses(rows)
         if n_loss >= LOSS_STREAK_N and (time.time() - parse_iso(last_loss_ts)) < LOSS_STREAK_PAUSE_H * 3600:
             log.warning("[%s] %d consecutive losses — new entries paused %dh", ch[:8], n_loss, LOSS_STREAK_PAUSE_H)
@@ -538,7 +590,7 @@ class HyroBridge:
             log.warning("[%s] PAYOUT READY: profit $%.2f >= 5%% cap — no new entries until payout", ch[:8],
                         balance - init)
             return
-        if len(positions) >= MAX_POSITIONS:
+        if len(positions) >= max_pos:
             return
 
         btc_daily = await self.bars(mcp, ch, "BTCUSDT", interval="D", limit=80)
@@ -561,7 +613,7 @@ class HyroBridge:
         for p in positions:
             clusters[correlation_group(p["symbol"])] = clusters.get(correlation_group(p["symbol"]), 0) + 1
         cands = []
-        todo = [s for s in UNIVERSE if s not in held and s not in done and not is_blacklisted(s)]
+        todo = _dedup_todo([s for s in UNIVERSE if s not in done and not is_blacklisted(s)], held, global_held)
         if not todo:
             return  # every symbol already evaluated for this closed bar
         t_scan0 = time.time()
@@ -588,7 +640,7 @@ class HyroBridge:
 
         n_open = len(positions)
         for _sc, sym, sig in cands:
-            if n_open >= MAX_POSITIONS:
+            if n_open >= max_pos:
                 break
             grp = correlation_group(sym)
             if clusters.get(grp, 0) >= MAX_PER_CLUSTER:
@@ -601,7 +653,8 @@ class HyroBridge:
                 break
             try:
                 placed = await self.enter(mcp, ch, sym, sig, risk_usd, equity, init, funded,
-                                          margin_lim, cpv_lim, margin_used, cpv_used)
+                                          margin_lim, cpv_lim, margin_used, cpv_used,
+                                          trading_days=progress.get("tradingDays", 0))
             except MCPError as e:
                 log.warning("  %s: entry rejected (%s)", sym, str(e)[:200])
                 continue
@@ -611,6 +664,8 @@ class HyroBridge:
                 clusters[grp] = clusters.get(grp, 0) + 1
                 margin_used += placed[0]
                 cpv_used += placed[1]
+                if global_held is not None:
+                    global_held.add(sym)
 
     @staticmethod
     def give_back(p) -> float:
@@ -677,7 +732,7 @@ class HyroBridge:
             return
         notional = 0.052 * init
         if funded and margin_lim > 0:
-            notional = min(notional, MARGIN_USE_FRAC * margin_lim - margin_used)
+            notional = min(notional, MARGIN_ENTRY_FRAC * init - margin_used)
         notional = max(notional, float(inst.get("minNotionalValue", 5) or 5) * 1.3)
         need = max(float(inst["minOrderQty"]), notional / px)
         qty = format(round_step(need, inst["qtyStep"], ROUND_UP), "f")
@@ -721,6 +776,32 @@ class HyroBridge:
             new_total -= gb - max(0.0, (i["mark"] - float(px)) * i["sign"] * i["size"])
         return new_total
 
+    async def reduce_exposure(self, mcp, ch, positions, init):
+        """Force-close positions until total effective margin <= MARGIN_TRIM_TARGET_FRAC of initial
+        balance, when it exceeds MARGIN_TRIM_FRAC. Biggest exposure first. Covers manual trades and
+        legacy positions the entry guard can't see. Returns the (reduced) total margin used."""
+        threshold = MARGIN_TRIM_FRAC * init
+        target = MARGIN_TRIM_TARGET_FRAC * init
+        margin_used = sum(_effective_margin(p) for p in positions)
+        if margin_used <= threshold or not positions:
+            return margin_used
+        log.warning("[%s] EXPOSURE $%.0f > $%.0f (%.0f%% of init) — reducing to $%.0f", ch[:8],
+                    margin_used, threshold, MARGIN_TRIM_FRAC * 100, target)
+        for p in sorted(positions, key=lambda x: _effective_margin(x), reverse=True):
+            if margin_used <= target:
+                break
+            sym, im = p["symbol"], _effective_margin(p)
+            log.warning("  closing %s (margin $%.0f)", sym, im)
+            if DRY_RUN:
+                margin_used -= im
+                continue
+            try:
+                await mcp.call("close_position", {"challengePublicId": ch, "symbol": sym})
+                margin_used -= im
+            except MCPError as e:
+                log.error("  could not close %s: %s", sym, str(e)[:160])
+        return margin_used
+
     async def cancel_stale(self, mcp, ch):
         d = await mcp.call("list_open_orders", {"challengePublicId": ch, "limit": 50})
         now = time.time() * 1000
@@ -740,7 +821,7 @@ class HyroBridge:
                 log.warning("  could not cancel %s: %s", o.get("orderId"), str(e)[:160])
 
     async def enter(self, mcp, ch, sym, sig, risk_usd, equity, init, funded,
-                    margin_lim, cpv_lim, margin_used, cpv_used):
+                    margin_lim, cpv_lim, margin_used, cpv_used, trading_days=0):
         inst = await self.instrument(mcp, ch, sym)
         tk = await mcp.call("get_tickers", {"challengePublicId": ch, "symbol": sym})
         row = (tk.get("list") or [{}])[0] if isinstance(tk, dict) else {}
@@ -753,17 +834,21 @@ class HyroBridge:
         if qty is None:
             log.info("  %s: size rejected (%s)", sym, notional)
             return None
+        if not funded and trading_days < 5 and notional < 0.052 * init:
+            log.info("  %s: notional $%.0f < 5.2%% of initial — SKIP (eval needs a qualifying trading day, %d/5)",
+                     sym, notional, trading_days)
+            return None
         if notional < MIN_NOTIONAL_PCT_INITIAL / 100.0 * init:
             log.info("  %s: notional $%.0f < 5%% of initial (would not count as a trading day) — still OK", sym, notional)
         sl_str = round_price(stop, inst["tickSize"], ROUND_DOWN)
         args = {"challengePublicId": ch, "symbol": sym, "side": "Buy", "orderType": "Market",
                 "qty": qty, "stopLoss": sl_str, "orderLinkId": order_link_id(sym, sig["bar_ts"])}
         pv = await mcp.call("preview_order", {k: v for k, v in args.items() if k != "orderLinkId"})
-        im = _f(pv.get("estimatedInitialMargin"), notional) if isinstance(pv, dict) else notional
+        im = max(_f(pv.get("estimatedInitialMargin")) if isinstance(pv, dict) else 0.0, notional)
         if funded:
-            if margin_lim > 0 and margin_used + im > MARGIN_USE_FRAC * margin_lim:
-                log.warning("  %s: MARGIN GUARD %.0f + %.0f > %.0f%% of $%.0f — skip", sym, margin_used, im,
-                            MARGIN_USE_FRAC * 100, margin_lim)
+            if margin_lim > 0 and margin_used + im > MARGIN_ENTRY_FRAC * init:
+                log.warning("  %s: MARGIN GUARD %.0f + %.0f > %.0f%% of $%.0f init — skip", sym, margin_used, im,
+                            MARGIN_ENTRY_FRAC * 100, init)
                 return None
             if cpv_lim > 0 and cpv_used + notional > CPV_USE_FRAC * cpv_lim:
                 log.warning("  %s: CPV GUARD — skip", sym)
