@@ -360,8 +360,15 @@ async def _fetch_bot_data(token: str) -> dict:
                     rules = stage.get("rules", {}) if isinstance(stage, dict) else {}
 
                     equity = float(eq_metrics.get("equity", 0) or 0)
-                    # v2.9: realized P&L = closed-trade PnL (correctly signed) from tradeMetrics
-                    realized_pnl = float(trade_metrics.get("longRealizedPnl", 0) or 0) + float(trade_metrics.get("shortRealizedPnl", 0) or 0)
+                    # v4.0: HyroTrader's own stage progress is the source of truth for P&L and trading days
+                    # (matches the account page). tradeMetrics long+short realized is only a fallback.
+                    progress = stage.get("progress", {}) if isinstance(stage, dict) else {}
+                    progress = progress if isinstance(progress, dict) else {}
+                    if progress.get("totalPnl") is not None:
+                        realized_pnl = float(progress.get("totalPnl") or 0)
+                    else:
+                        realized_pnl = float(trade_metrics.get("longRealizedPnl", 0) or 0) + float(trade_metrics.get("shortRealizedPnl", 0) or 0)
+                    trading_days = int(float(progress.get("tradingDays", 0) or 0))
 
                     # Actually currentLoss is the loss amount (positive), so PnL = -(currentLoss)
                     current_loss = float(eq_metrics.get("currentLoss", 0) or 0)
@@ -397,7 +404,7 @@ async def _fetch_bot_data(token: str) -> dict:
                         "drawdownPct": round((current_drawdown / drawdown_limit * 100) if drawdown_limit > 0 else 0, 1),
                         "lossPct": loss_pct,
                         "targetPct": max(0, target_pct),
-                        "tradingDays": 0,  # would need trade history to count
+                        "tradingDays": trading_days,
                         "minDays": min_days,
                         "profitTarget": profit_target,
                     }

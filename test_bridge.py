@@ -1,5 +1,5 @@
 """
-test_bridge.py — QA suite for hyro_bridge v3.2 (run: python test_bridge.py).
+test_bridge.py — QA suite for hyro_bridge v4.0 (run: python test_bridge.py).
 
 Sections: SMOKE (imports/constants) | REGRESSION (v3.1 root-cause bugs stay fixed) |
 VERIFICATION (indicator + signal math vs hand-computed values) | SANITY (risk/sizing/guards) |
@@ -31,9 +31,9 @@ print(f"QA SUITE — hyro_bridge v{hb.VERSION}")
 print("=" * 66)
 
 # ── SMOKE ───────────────────────────────────────────────────────────────
-check("version 3.2.3", hb.VERSION == "3.2.3")
+check("version 3.3.0", hb.VERSION == "3.3.0")
 check("4H interval", hb.INTERVAL == "240" and hb.BAR_MS == 14_400_000)
-check("strategy constants", (hb.DONCHIAN_N, hb.EMA_TREND, hb.STOP_ATR, hb.TRAIL_ATR) == (20, 200, 3.0, 4.5))
+check("strategy constants v3.3 (validated stop/trail + 10R TP)", (hb.DONCHIAN_N, hb.EMA_TREND, hb.STOP_ATR, hb.TRAIL_ATR, hb.TP_R, hb.BREAKEVEN_R, hb.STAGNATION_SWAP) == (20, 200, 3.0, 4.5, 10.0, 0.0, False))
 check("kline limit >= 600 (EMA200 convergence)", hb.KLINE_LIMIT >= 600)
 check("risk defaults sane", 0 < hb.RISK_PCT_FUNDED <= 0.5 and 0 < hb.RISK_PCT_EVAL <= 1.0,
       f"eval {hb.RISK_PCT_EVAL}% funded {hb.RISK_PCT_FUNDED}%")
@@ -59,7 +59,7 @@ check("closed_only drops the forming bar", [b[0] for b in closed] == [b[0] for b
 check("closed_only keeps a bar exactly at its close", len(hb.closed_only(asc, hb.BAR_MS, asc[-1][0] + hb.BAR_MS)) == 5)
 
 # blacklist regression (prefix, not substring)
-check("blacklist NEAR/LINK", hb.is_blacklisted("NEARUSDT") and hb.is_blacklisted("LINKUSDT"))
+check("NEAR/LINK no longer blacklisted (v4.0)", not hb.is_blacklisted("NEARUSDT") and not hb.is_blacklisted("LINKUSDT"))
 check("BTCUSDT not blacklisted (USDT suffix)", not hb.is_blacklisted("BTCUSDT"))
 check("JPY + bare USDT blacklisted", hb.is_blacklisted("USDJPY") and hb.is_blacklisted("USDT"))
 
@@ -94,8 +94,8 @@ check("regime unknown on short history", hb.market_regime(daily_up[:20]) == "unk
 
 # chandelier + tighten-only
 since = [bar(0, 100, 110, 99, 108), bar(1, 108, 120, 107, 118)]
-check("chandelier long = HH - 4.5*ATR", hb.chandelier_stop(since, 2.0, "Buy") == 120 - 9.0)
-check("chandelier short = LL + 4.5*ATR", hb.chandelier_stop(since, 2.0, "Sell") == 99 + 9.0)
+check("chandelier long = HH - TRAIL_ATR*ATR", abs(hb.chandelier_stop(since, 2.0, "Buy") - (120 - 2.0 * hb.TRAIL_ATR)) < 1e-9)
+check("chandelier short = LL + TRAIL_ATR*ATR", abs(hb.chandelier_stop(since, 2.0, "Sell") - (99 + 2.0 * hb.TRAIL_ATR)) < 1e-9)
 check("tighten: long moves up", hb.tighten_only("Buy", 100, 105, 118))
 check("tighten: long never loosens", not hb.tighten_only("Buy", 106, 105, 118))
 check("tighten: long never crosses price", not hb.tighten_only("Buy", 100, 119, 118))
@@ -282,6 +282,175 @@ check("de-dup no-op when global_held empty",
       hb._dedup_todo(["BTCUSDT", "ETHUSDT"], set(), None) == ["BTCUSDT", "ETHUSDT"])
 check("de-dup drops a lone breakout for the 2nd account",
       hb._dedup_todo(["OPUSDT"], set(), {"OPUSDT"}) == [])
+
+# ═══ v4.0 SMART ANALYTICS ENGINE ═══════════════════════════════════════
+# (a) zero blacklisted coins
+check("v4.0 (a) BLACKLISTED_SYMBOLS is empty", hb.BLACKLISTED_SYMBOLS == set())
+check("v4.0 (a) every universe coin is tradable", not any(hb.is_blacklisted(s) for s in hb.UNIVERSE))
+check("v4.0 (a) NEAR + LINK are in the universe", {"NEARUSDT", "LINKUSDT"} <= set(hb.UNIVERSE))
+check("v4.0 scan interval stays 600 s", hb.SCAN_INTERVAL == 600)
+ry = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "render.yaml"), encoding="utf-8").read()
+check("v4.0 render.yaml SCAN_INTERVAL 600", "SCAN_INTERVAL" in ry and "value: 600" in ry)
+
+
+# (b) 5-pillar smart score
+def runner(n=260, vol_last=3.0):
+    """Steady uptrend with a pull-back, then a 3-bar re-acceleration ending in a full-body,
+    high-volume breakout candle. Ascending, closed bars."""
+    out, px = [], 100.0
+    for i in range(n - 13):
+        o = px
+        px *= 1.004
+        out.append(bar(i, o, px * 1.003, o * 0.997, px, 1.0))
+    for i in range(n - 13, n - 3):   # pull-back / base
+        o = px
+        px *= 0.997
+        out.append(bar(i, o, o * 1.002, px * 0.998, px, 1.0))
+    for k, i in enumerate(range(n - 3, n)):
+        o = px
+        px *= (1.012, 1.02, 1.045)[k]
+        v = vol_last if i == n - 1 else 1.2
+        out.append(bar(i, o, px * 1.001, o * 0.999, px, v))
+    return out
+
+
+rb = runner()
+sc = hb.calculate_smart_score(rb)
+check("v4.0 (b) score returns a dict for enough bars", isinstance(sc, dict), "")
+check("v4.0 (b) score is LONG-only", sc and sc["side"] == "Buy")
+check("v4.0 (b) score bounded 0-100", sc and 0 <= sc["score"] <= 100, f"{sc and sc['score']}")
+check("v4.0 (b) pillar caps 25/20/20/20/15", sc and sc["pillars"]["macd"] <= 25 and sc["pillars"]["candle"] <= 20
+      and sc["pillars"]["trend"] <= 20 and sc["pillars"]["rvol"] <= 20 and sc["pillars"]["atr_pct"] <= 15,
+      f"{sc and sc['pillars']}")
+check("v4.0 (b) runner passes all hard gates", sc and sc["eligible"], f"{sc and sc['gates']}")
+check("v4.0 (b) runner qualifies (>= 70)", hb.qualifies(sc), f"score {sc and sc['score']} {sc and sc['pillars']}")
+check("v4.0 (b) RVOL 3.0 earns full volume points", sc and abs(sc["pillars"]["rvol"] - 20.0) < 1e-9, f"rvol {sc and sc['rvol']:.2f}")
+weak = hb.calculate_smart_score(runner(vol_last=1.0))
+check("v4.0 (b) RVOL < 1.25 fails the volume gate", weak and not weak["gates"]["rvol"] and not hb.qualifies(weak),
+      f"rvol {weak and weak['rvol']:.2f}")
+check("v4.0 (b) flat market never qualifies", not hb.qualifies(hb.calculate_smart_score(flat)))
+check("v4.0 (b) below-EMA200 bounce never qualifies", not hb.qualifies(hb.calculate_smart_score(below_ema)))
+check("v4.0 (b) too few bars -> None", hb.calculate_smart_score(rb[-100:]) is None)
+wick = rb[:-1] + [bar(259, rb[-1][1], rb[-1][4] * 1.04, rb[-1][3], rb[-1][4], 3.0)]   # big upper-wick rejection
+sw = hb.calculate_smart_score(wick)
+check("v4.0 (b) upper-wick rejection scores fewer candle points", sw and sw["pillars"]["candle"] < sc["pillars"]["candle"],
+      f"{sw and sw['pillars']['candle']} vs {sc['pillars']['candle']}")
+h1_dn = [bar(i, 200 - i * 0.2, 200.5 - i * 0.2, 199 - i * 0.2, 199.8 - i * 0.2, step=3_600_000) for i in range(120)]
+s1 = hb.calculate_smart_score(rb, h1_dn)
+check("v4.0 (b) negative 1H MACD costs 10 points", s1 and abs((sc["score"] - s1["score"]) - hb.H1_PENALTY) < 1e-6,
+      f"{sc['score']} -> {s1 and s1['score']}")
+hist = hb.macd_histogram([float(x) for x in range(1, 80)])
+check("v4.0 (b) MACD histogram length + sign on a linear ramp", len(hist) == 79 and hist[-1] > -1e-9)
+adx_up = hb.adx_series(rb)[-1]
+check("v4.0 (b) ADX defined and strong on a steady trend", adx_up is not None and adx_up >= hb.ADX_MIN, f"{adx_up}")
+
+# (c) mandatory TP + SL at entry, and TP auto-repair on existing positions
+sl_s, tp_s, rr = hb.entry_brackets(100.0, 2.0, 0.0, "0.01")
+check("v3.3 (c) entry SL = entry - 3xATR", sl_s == "94.00", sl_s)
+check("v3.3 (c) entry TP = entry + 10R (30xATR)", tp_s == "160.00" and abs(rr - 10.0) < 1e-9, f"{tp_s} {rr}")
+# live case (Oct 17): TRXUSDT long entry 0.33680, SL 0.33110, takeProfit '' -> TP = 0.33680 + 10*0.0057 = 0.39380
+check("v4.0 (c) tp_missing detects '' / '0' / None", hb.tp_missing({"takeProfit": ""}) and hb.tp_missing({"takeProfit": "0"})
+      and hb.tp_missing({}) and not hb.tp_missing({"takeProfit": "1.5"}))
+trx_tp = hb.repair_tp_price("Buy", 0.33680, 0.33110, 0.3370)
+check("v3.3 (c) TP repair = entry + 10x|entry - SL| (live TRX case)", abs(trx_tp - 0.39380) < 1e-9, f"{trx_tp}")
+check("v4.0 (c) TP repair never lands below the mark", hb.repair_tp_price("Buy", 100, 98, 106, atr=1.0) > 106)
+check("v4.0 (c) TP repair falls back to ATR when SL is trailed above entry",
+      abs(hb.repair_tp_price("Buy", 100, 101, 103, atr=1.0) - (100 + hb.TP_ATR)) < 1e-9)
+check("v4.0 (c) TP repair None with no basis", hb.repair_tp_price("Buy", 100, 0, 100, atr=0) is None)
+
+
+class FakeEntryMCP(FakeMCP):
+    async def call(self, name, args, retries=5):
+        self.calls.append((name, dict(args)))
+        if name == "get_instruments":
+            return {"list": [{"status": "Trading", "priceFilter": {"tickSize": "0.01"},
+                              "lotSizeFilter": {"qtyStep": "0.1", "minOrderQty": "0.1", "minNotionalValue": "5"}}]}
+        if name == "get_tickers":
+            return {"list": [{"lastPrice": "100"}]}
+        if name == "preview_order":
+            return {"estimatedInitialMargin": "500"}
+        return {}
+
+
+fe = FakeEntryMCP()
+placed = asyncio.run(hb.HyroBridge("x").enter(fe, "ch", "SOLUSDT", {"close": 100.0, "atr": 2.0, "score": 78.0, "bar_ts": 1},
+                                             40.0, 10000.0, 10000.0, False, 0, 0, 0, 0, trading_days=5))
+po = next((a for n, a in fe.calls if n == "place_order"), {})
+check("v3.3 (c) place_order carries BOTH stopLoss and takeProfit", placed and po.get("stopLoss") == "94.00"
+      and po.get("takeProfit") == "160.00", f"{po}")
+check("v4.0 (c) entry is a LONG", po.get("side") == "Buy")
+pv = next((a for n, a in fe.calls if n == "preview_order"), {})
+check("v3.3 (c) preview_order also carries the TP", pv.get("takeProfit") == "160.00")
+
+
+class FakeManageMCP(FakeEntryMCP):
+    """manage(): serves ascending-sorted-able klines and records set_trading_stop."""
+    def __init__(self, px=100.0):
+        super().__init__()
+        self.px = px
+        self.t_last = (int(time.time() * 1000) // hb.BAR_MS) * hb.BAR_MS
+
+    async def call(self, name, args, retries=5):
+        if name == "get_klines":
+            k = min(args["limit"], 700)
+            rows = [[str(self.t_last - i * hb.BAR_MS), str(self.px), str(self.px * 1.01), str(self.px * 0.99),
+                     str(self.px), "5", "0"] for i in range(k)]
+            return {"list": rows}
+        return await super().call(name, args, retries)
+
+
+fmm = FakeManageMCP()
+pos = {"symbol": "TRXUSDT", "side": "Buy", "size": "100", "avgPrice": "100", "markPrice": "100.5",
+       "stopLoss": "96", "takeProfit": ""}
+asyncio.run(hb.HyroBridge("x").manage(fmm, "ch", pos, None))
+sts = [a for n, a in fmm.calls if n == "set_trading_stop"]
+check("v3.3 (c) manage() repairs a missing TP via set_trading_stop", sts and sts[0].get("takeProfit") == "140.00", f"{sts}")
+check("v4.0 (c) TP repair does not loosen the SL", sts and "stopLoss" not in sts[0], f"{sts}")
+fmm2 = FakeManageMCP()
+asyncio.run(hb.HyroBridge("x").manage(fmm2, "ch", dict(pos, takeProfit="108"), None))
+check("v3.3 (c) no call when SL + TP already set", not [a for n, a in fmm2.calls if n == "set_trading_stop"])
+fmm3 = FakeManageMCP()
+asyncio.run(hb.HyroBridge("x").manage(fmm3, "ch", dict(pos, stopLoss="", takeProfit=""), None))
+st3 = next((a for n, a in fmm3.calls if n == "set_trading_stop"), {})
+check("v4.0 (c) naked position gets SL AND TP in one call",
+      float(st3.get("stopLoss", 0) or 0) > 0 and float(st3.get("stopLoss", 0) or 0) < 100.5 < float(st3.get("takeProfit", 0) or 0),
+      f"{st3}")
+
+# breakeven + trail + stagnation
+sinc = [bar(0, 100, 101, 99, 100), bar(1, 100, 104.5, 100, 104)]
+check("v3.3 trail = plain chandelier HH - 4.5xATR (no breakeven)", abs(hb.trail_candidate("Buy", 100, 6.0, sinc, 2.0) - (104.5 - 9.0)) < 1e-9)
+check("v3.3 trail later bars", abs(hb.trail_candidate("Buy", 100, 6.0, sinc + [bar(2, 104, 112, 104, 111)], 2.0) - (112 - 9.0)) < 1e-9)
+check("v3.3 qualifies = validated breakout signal", hb.qualifies({"eligible": True, "score": 1.2}) and not hb.qualifies(None))
+check("v4.0 stagnant: 4 bars within +-0.25R", hb.is_stagnant("Buy", 100, 100.9, 4.4, 4))
+check("v4.0 not stagnant: only 3 bars", not hb.is_stagnant("Buy", 100, 100.9, 4.4, 3))
+check("v4.0 not stagnant: +0.5R", not hb.is_stagnant("Buy", 100, 102.2, 4.4, 6))
+check("v4.0 swap threshold 82 > entry threshold 70", hb.SWAP_MIN_SCORE == 82 and hb.SMART_MIN_SCORE == 70)
+
+# (d) 5-account unique symbol allocation
+accts = [(f"acct{i}", 1) for i in range(5)]
+ranked = ["DOGEUSDT", "SOLUSDT", "SUIUSDT", "1000PEPEUSDT", "TRXUSDT", "ADAUSDT"]
+ga = set()
+alloc = hb.allocate_symbols(ranked, accts, ga)
+syms = [s for v in alloc.values() for s in v]
+check("v4.0 (d) 5 accounts get 5 different coins", len(syms) == 5 and len(set(syms)) == 5, f"{alloc}")
+check("v4.0 (d) best coin goes to the first account", alloc["acct0"] == ["DOGEUSDT"] and alloc["acct4"] == ["TRXUSDT"])
+check("v4.0 (d) allocated coins reserved globally", ga == set(syms))
+ga2 = {"SOLUSDT"}   # already held by some account
+alloc2 = hb.allocate_symbols(ranked, accts, ga2)
+check("v4.0 (d) held coin never re-assigned", "SOLUSDT" not in [s for v in alloc2.values() for s in v], f"{alloc2}")
+alloc3 = hb.allocate_symbols(["DOGEUSDT", "SOLUSDT"], accts, set())
+check("v4.0 (d) only 2 qualifiers -> first 2 accounts trade, 3 stay cash",
+      alloc3["acct0"] == ["DOGEUSDT"] and alloc3["acct1"] == ["SOLUSDT"] and all(alloc3[f"acct{i}"] == [] for i in (2, 3, 4)),
+      f"{alloc3}")
+alloc4 = hb.allocate_symbols(ranked, [("a", 2), ("b", 2)], set())
+check("v4.0 (d) multi-slot accounts still unique", sum(len(v) for v in alloc4.values()) == 4 and
+      len({s for v in alloc4.values() for s in v}) == 4)
+
+# passed-account hard lock
+check("v4.0 passed lock: +10% and 5 days", hb.account_passed(11000, 10000, 5, 1000))
+check("v4.0 passed lock: +10% but 4 days -> not yet", not hb.account_passed(11000, 10000, 4, 1000))
+check("v4.0 passed lock: 5 days but below target", not hb.account_passed(10999, 10000, 5, 1000))
+check("v4.0 passed lock: default 10% when target unknown", hb.account_passed(11000, 10000, 5))
 
 print("=" * 66)
 if FAIL:

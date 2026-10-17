@@ -1,0 +1,31 @@
+coins=34 span 2023-07-01 -> 2026-10-17
+v3.2.3       ALL signals : n=7029 win%= 34.2 expR=+0.317 avgW=2.42 avgL=-0.78 trades/wk=40.87
+v3.2.3       ALL 1-slot  : n= 104 win%= 34.6 expR=+0.663 avgW=3.19 avgL=-0.68 trades/wk=0.60
+v3.2.3       IS  signals : n=4388 win%= 33.9 expR=+0.393 avgW=2.66 avgL=-0.77 trades/wk=42.08
+v3.2.3       IS  1-slot  : n=  63 win%= 34.9 expR=+0.523 avgW=2.77 avgL=-0.68 trades/wk=0.60
+v3.2.3       OOS signals : n=2641 win%= 34.6 expR=+0.190 avgW=2.04 avgL=-0.79 trades/wk=39.08
+v3.2.3       OOS 1-slot  : n=  42 win%= 35.7 expR=+0.860 avgW=3.64 avgL=-0.69 trades/wk=0.62
+v4.0 thr70   ALL signals : n=4021 win%= 48.4 expR=+0.110 avgW=1.22 avgL=-0.93 trades/wk=23.38
+v4.0 thr70   ALL 1-slot  : n= 227 win%= 47.6 expR=+0.041 avgW=1.10 avgL=-0.92 trades/wk=1.32
+v4.0 thr70   IS  signals : n=2465 win%= 49.4 expR=+0.108 avgW=1.17 avgL=-0.93 trades/wk=23.64
+v4.0 thr70   IS  1-slot  : n= 131 win%= 46.6 expR=-0.014 avgW=1.00 avgL=-0.89 trades/wk=1.26
+v4.0 thr70   OOS signals : n=1556 win%= 46.7 expR=+0.113 avgW=1.31 avgL=-0.94 trades/wk=23.03
+v4.0 thr70   OOS 1-slot  : n=  96 win%= 49.0 expR=+0.116 avgW=1.23 avgL=-0.96 trades/wk=1.42
+v4.0 thr60   ALL signals : n=4260 win%= 48.0 expR=+0.101 avgW=1.22 avgL=-0.93 trades/wk=24.77
+v4.0 thr60   ALL 1-slot  : n= 227 win%= 45.8 expR=-0.026 avgW=1.02 avgL=-0.91 trades/wk=1.32
+v4.0 thr60   IS  signals : n=2622 win%= 48.7 expR=+0.093 avgW=1.17 avgL=-0.93 trades/wk=25.14
+v4.0 thr60   IS  1-slot  : n= 137 win%= 43.1 expR=-0.079 avgW=0.98 avgL=-0.88 trades/wk=1.31
+v4.0 thr60   OOS signals : n=1638 win%= 46.9 expR=+0.113 avgW=1.31 avgL=-0.94 trades/wk=24.24
+v4.0 thr60   OOS 1-slot  : n=  90 win%= 50.0 expR=+0.056 avgW=1.08 avgL=-0.97 trades/wk=1.33
+v4.0 thr50   ALL signals : n=4291 win%= 47.9 expR=+0.099 avgW=1.22 avgL=-0.93 trades/wk=24.95
+v4.0 thr50   ALL 1-slot  : n= 227 win%= 45.8 expR=-0.026 avgW=1.02 avgL=-0.91 trades/wk=1.32
+v4.0 thr50   IS  signals : n=2645 win%= 48.5 expR=+0.088 avgW=1.17 avgL=-0.93 trades/wk=25.36
+v4.0 thr50   IS  1-slot  : n= 137 win%= 43.1 expR=-0.079 avgW=0.98 avgL=-0.88 trades/wk=1.31
+v4.0 thr50   OOS signals : n=1646 win%= 47.0 expR=+0.118 avgW=1.31 avgL=-0.94 trades/wk=24.36
+v4.0 thr50   OOS 1-slot  : n=  90 win%= 50.0 expR=+0.056 avgW=1.08 avgL=-0.97 trades/wk=1.33
+v4.0 thr40   ALL signals : n=4292 win%= 47.9 expR=+0.099 avgW=1.22 avgL=-0.93 trades/wk=24.95
+v4.0 thr40   ALL 1-slot  : n= 227 win%= 45.8 expR=-0.026 avgW=1.02 avgL=-0.91 trades/wk=1.32
+v4.0 thr40   IS  signals : n=2645 win%= 48.5 expR=+0.088 avgW=1.17 avgL=-0.93 trades/wk=25.36
+v4.0 thr40   IS  1-slot  : n= 137 win%= 43.1 expR=-0.079 avgW=0.98 avgL=-0.88 trades/wk=1.31
+v4.0 thr40   OOS signals : n=1647 win%= 47.0 expR=+0.117 avgW=1.31 avgL=-0.94 trades/wk=24.37
+v4.0 thr40   OOS 1-slot  : n=  90 win%= 50.0 expR=+0.056 avgW=1.08 avgL=-0.97 trades/wk=1.33

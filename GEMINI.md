@@ -29,6 +29,10 @@
 10. **Always use stop loss** — no exceptions, ever.
 11. **Max 2-3 correlated positions** per account.
 12. **Swap stagnant trades** when: position flat 48+ hours with no momentum, a higher-confidence signal (>70%) appears on a different asset with better R:R. Close old trade first, THEN enter new one.
+13. **ABSOLUTE BAN ON MANUAL TRADES ON BOT-CONNECTED ACCOUNTS.**
+    - Never enter or close trades manually inside any HyroTrader account connected to `hyro_bridge.py`.
+    - **Why**: HyroTrader checks Initial Margin in real-time. Manual trades placed at 1x leverage consume 100% of notional as margin. Stacking a manual trade on top of bot positions immediately trips the 25% margin cap ($1,250 on $5K) and triggers instant account failure.
+    - Discretionary or dashboard trades must be taken ONLY on separate, dedicated accounts with zero bot automation.
 
 ## Prop Firm Context
 - **HyroTrader**: Crypto futures via Hyro Terminal (my.hyrotrader.com). Migrated from Cleo.finance/Bybit on Oct 7, 2026. Best for crypto.
@@ -45,18 +49,14 @@
 - **Monthly Target**: 5-10% net return, 6-8 trades/month, 65% win rate. (Realistic at 1% risk: 2.5–4.5%/month.)
 - **Time Commitment**: 15-30 min/night, 4-5 nights/week (Tue-Thu preferred) + weekend analysis.
 
-## Active Account Portfolio (Updated: Oct 4, 2026 — from user's Cleo screenshots, NO open positions)
-> All three HyroTrader accounts are **One-Step** (per account names). Official One-Step rules (hyrotrader.com/trading-rules, verified Oct 4):
+## Active Account Portfolio (Updated: Oct 14, 2026 — Post-v3.2.3 Deployment)
+> All HyroTrader accounts are **One-Step**. Official One-Step rules (hyrotrader.com/trading-rules):
 > max loss **6% of initial balance, fixed, equity-based (incl. unrealized)** | daily drawdown **4% static**, from start-of-day equity, reset 00:00 UTC |
 > **5 minimum trading days** (a day counts only if you CLOSE ≥1 trade with notional ≥5% of initial balance that moved ≥1% of trade value) |
 > 40% of profit target per day cap (excess doesn't count; losing days count in full) | account closes after 30 days with no trades.
-> ⚠️ Previous notes assumed a 10% floor ($9,000) — WRONG for One-Step. User should confirm floors in the HyroTrader dashboard objectives.
-- **5K Funded (xt0ipo8)**: Balance $5,131.54 | Floor $4,700 (buffer $431) | Daily limit $200 | Payout $107.19 RECEIVED on Coinbase ~24h after request → cleared to trade at 0.5% (~$25).
-  History: NEAR +$102.56, AVAX −$28.68 (SL), LTC +$60.11, AVAX −$2.46 (closed for payout freeze). Confirm with HyroTrader whether next payout baseline is $5,131.54 or $5,000.
-- **10K Challenge (8pbmfu0)**: Balance $10,083.55 | Floor $9,400 | Target $10,400 (needs only +$316.45 ≈ $317!) | AVAX closed +$83.55 on Oct 2 = trading day 1 of 5.
-  Needs ≥4 more qualifying trading days. Per-day profit cap = $160 (40% of the $400 target). Plan ~$80/day × 4 days. Easy and safe pass.
-- **10K Challenge (pd2x19s)**: Balance $9,604.71 | Floor **$9,400** (buffer only **$204.71**) | Target $11,000 (needs +$1,395.29) | AVAX closed +$50.39 Oct 2.
-  Risk ≤ $25–50 per trade (rule 8a). Lowest priority account — protect it, don't chase it. No time limit; trade at least once per 30 days.
+- **5K Funded (xt0ipo8)**: **TERMINATED (Oct 14, 2026)**. Failed due to Max Exposure violation ($1,844.40 Initial Margin vs $1,250.00 cap) triggered when a manual 28-LTC short executed at 1x leverage and stacked on top of the bot's OP position.
+- **10K Challenge (28xldlj1SuSy25GQWEMm0E, Bybit Simulator)**: **ACTIVE (SOLE SURVIVING HYRO ACCOUNT)**. (The old Cleo ID 8pbmfu0 is EXPIRED — never use it.) Floor $9,400 | Target $11,000 (+$1,000) | Trading Days: 2 of 5 completed. Bot v4.0.0 at 0.40% risk ($40), MAX_POSITIONS_EVAL = 1. No manual trading allowed on this account.
+- **10K Challenge (pd2x19s / 5IvGsKwh)**: TERMINATED (Oct 12, 2026). Failed due to daily drawdown give-back breach under v3.1 backwards-kline bug.
 - **Funding Pips Challenge**: ACTIVE. Web dashboard is configured for **$5K 2-Step Flex** (likely the user's account; phase/balance still unconfirmed). Forex Trend Following only.
   Official 2-Step Flex rules (fundingpips.com, checked Oct 4, 2026): P1 target 10%, P2 target 8%, **daily loss 4%**, max loss 12% static,
   1 min trading day, no time limit. Dashboard config says 5% daily / 10% max → use the STRICTER of each (4% daily = $200, 10% max = $500) until the user confirms.
@@ -87,8 +87,7 @@
   The pd2x19s LINK trade used manual levels (Entry $14.49, SL $14.06, TP $15.50 → R:R 2.35).
 
 ## Blacklisted Assets (Do NOT Trade)
-- **NEAR Protocol**: Stopped out 3+ times across multiple accounts (Sept-Oct 2026). Permanently removed.
-- **LINK (Chainlink)**: Stopped out on pd2x19s ($14.06 SL hit). User rejected. Do not propose.
+- **NEAR / LINK**: Manual-trading history: NEAR stopped out 3+ times, LINK stopped on pd2x19s. As of bot v4.0 (Oct 17, 2026) the user REMOVED all static coin blacklists from the bot: NEAR and LINK are bot-eligible when they score >= 70. Do not re-add a ticker blacklist to hyro_bridge.py.
 - **JPY Pairs (Japan)**: User explicitly refused to trade Japan. Do not propose USD/JPY, EUR/JPY, GBP/JPY, etc.
 
 ## HyroTrader-Specific Rules (verified against hyrotrader.com/trading-rules, Oct 4, 2026)
@@ -119,15 +118,24 @@
 - Always provide: coin, direction, entry, SL, TP, risk %, position size, and reasoning.
 - Always flag if the signal is Mean Reversion (requires macro cross-check).
 
-## Bot v3.2 (deployed Oct 13, 2026) — HyroTrader automation rules
-- Strategy: 4H Donchian(20) breakout, LONG only; close > EMA200 (4H); BTC daily close not below SMA50*0.995.
-  Stop 3.0xATR(14); chandelier trail 4.5xATR on closed bars; no fixed TP. Research: research/ + V3.2_HANDOFF.md.
-- Why: v3.1 fed newest-first klines unsorted (signals = coin flip) and its stack had no edge even when fixed.
-  v3.2 backtest (Jul-2023..Oct-2026, fees+slippage): +0.32R/trade in-sample, +0.21R/trade out-of-sample.
-- Risk: 0.5% of initial per trade (eval and funded), scaled down as total loss grows (floor 50%).
-  Max 3 positions, max 2 per correlation cluster, 25% notional cap, funded margin <= 80% of marginLimit.
-- Daily-DD protection: give-back shield keeps (all stops hit) <= 70% of the daily limit measured from 00:00 UTC
-  equity incl. open profit; close-all brake at 75%. Keep-alive round trip at 26 days without a closed trade.
-- Expectation (walk-forward sim): slow grinder — many months per +10% challenge, rarely fails; funded 5K pays
-  roughly $0-600/yr at this risk. Not a $3,200/month engine at current account sizes; scale capital, not risk.
-- Do NOT raise risk to 1%: out-of-sample it failed ~50% of challenge windows (daily-DD breaches).
+## Bot v3.3.0 (Oct 17, 2026) — HyroTrader automation rules (chosen by backtest over v4.0)
+- Strategy: 4H Donchian(20) breakout, LONG only; close > EMA200 (4H); BTC daily close not below SMA50*0.995. No ticker blacklist.
+- Exits: hard SL 3.0xATR(14) AND hard TP at 10R (30xATR) on EVERY order; any open position missing a TP gets one each cycle
+  (TP = entry + 10x|entry - SL|). Chandelier trail 4.5xATR, tighten-only. No breakeven ratchet, no stagnation swap.
+- Routing: one scan per cycle, ranked breakouts go to open slots across ALL accounts; a coin held or pending anywhere is never
+  assigned again. Passed-account hard lock (target + 5 trading days -> flatten, never trade again).
+- Backtest (research/v33_decision_run1.txt, 34 coins, Jul-2023..Oct-2026, 1 eval slot): v3.3 +0.54R/trade (IS +0.41R, OOS +0.71R),
+  ~36% win rate, ~0.6 trades/week. v4.0 (score>=70, 2.2xATR stop, 2R TP) scored +0.04R and was REJECTED. A 2nd eval slot
+  doubles trades but cuts expectancy to ~+0.33R — not enabled.
+- Sizing & Position Limits:
+  - Evaluation Account: `RISK_PCT_EVAL = 0.40%` ($40 on $10K), `MAX_POSITIONS_EVAL = 1` position hard cap.
+  - Funded Account: `RISK_PCT_FUNDED = 0.50%` ($25 on $5K), `MAX_POSITIONS = 3`, max 2 per correlation cluster.
+  - Sized down as total loss grows (floor 50%).
+- Protection & Compliance Safeguards:
+  - **Cross-Account De-Dup (`global_held`)**: Live position registry across all accounts plus intraday entries; no two accounts can hold or enter the same coin.
+  - **Qualifying Trading Day Gate**: Evaluation accounts with < 5 trading days skip breakouts where notional < 5.2% of initial ($520 on $10K) so positions are never wasted on non-counting days.
+  - **Effective Margin Floor**: Entry margin preview is floored at `max(preview_im, notional)` to guard against 1x leverage reporting zero margin.
+  - **Emergency Exposure Trimmer**: `reduce_exposure()` automatically force-closes the largest position if total margin exceeds 18% of initial, trimming it down to 15%.
+  - **Daily-DD Give-Back Shield**: Keeps total stop risk <= 70% of daily limit measured from 00:00 UTC equity; Rule B kill switch flattens and pauses at 2% intraday give-back; emergency brake flattens at 75% of daily limit.
+  - **Keep-Alive**: Automatic round trip at 26 days without a closed trade to prevent the 30-day inactivity account closure.
+- Rule: Do NOT raise evaluation risk above 0.40% or funded risk above 0.50% without comprehensive out-of-sample backtesting that includes daily drawdown constraints.

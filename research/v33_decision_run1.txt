@@ -1,0 +1,30 @@
+v32 TP= 0.0R slots=1 ALL: n= 104 win%= 34.6 expR=+0.663 avgW=3.19 avgL=-0.68 trades/wk=0.60
+v32 TP= 0.0R slots=1 IS : n=  63 win%= 34.9 expR=+0.523 avgW=2.77 avgL=-0.68 trades/wk=0.60
+v32 TP= 0.0R slots=1 OOS: n=  42 win%= 35.7 expR=+0.860 avgW=3.64 avgL=-0.69 trades/wk=0.62
+v32 TP= 0.0R slots=2 ALL: n= 204 win%= 32.4 expR=+0.396 avgW=2.69 avgL=-0.70 trades/wk=1.19
+v32 TP= 0.0R slots=2 IS : n= 132 win%= 31.8 expR=+0.233 avgW=2.23 avgL=-0.70 trades/wk=1.27
+v32 TP= 0.0R slots=2 OOS: n=  75 win%= 34.7 expR=+0.697 avgW=3.36 avgL=-0.71 trades/wk=1.11
+v32 TP= 4.0R slots=1 ALL: n= 119 win%= 37.0 expR=+0.322 avgW=2.03 avgL=-0.68 trades/wk=0.69
+v32 TP= 4.0R slots=1 IS : n=  74 win%= 35.1 expR=+0.227 avgW=1.92 avgL=-0.69 trades/wk=0.71
+v32 TP= 4.0R slots=1 OOS: n=  45 win%= 42.2 expR=+0.504 avgW=2.10 avgL=-0.66 trades/wk=0.67
+v32 TP= 4.0R slots=2 ALL: n= 234 win%= 34.6 expR=+0.235 avgW=1.99 avgL=-0.70 trades/wk=1.36
+v32 TP= 4.0R slots=2 IS : n= 150 win%= 33.3 expR=+0.147 avgW=1.83 avgL=-0.70 trades/wk=1.44
+v32 TP= 4.0R slots=2 OOS: n=  87 win%= 37.9 expR=+0.420 avgW=2.26 avgL=-0.70 trades/wk=1.29
+v32 TP= 6.0R slots=1 ALL: n= 114 win%= 36.0 expR=+0.401 avgW=2.36 avgL=-0.70 trades/wk=0.66
+v32 TP= 6.0R slots=1 IS : n=  67 win%= 37.3 expR=+0.311 avgW=1.99 avgL=-0.69 trades/wk=0.64
+v32 TP= 6.0R slots=1 OOS: n=  48 win%= 35.4 expR=+0.521 avgW=2.80 avgL=-0.73 trades/wk=0.71
+v32 TP= 6.0R slots=2 ALL: n= 221 win%= 33.9 expR=+0.283 avgW=2.24 avgL=-0.72 trades/wk=1.28
+v32 TP= 6.0R slots=2 IS : n= 141 win%= 33.3 expR=+0.187 avgW=1.99 avgL=-0.71 trades/wk=1.35
+v32 TP= 6.0R slots=2 OOS: n=  83 win%= 36.1 expR=+0.464 avgW=2.59 avgL=-0.74 trades/wk=1.23
+v32 TP= 8.0R slots=1 ALL: n= 109 win%= 36.7 expR=+0.488 avgW=2.47 avgL=-0.66 trades/wk=0.63
+v32 TP= 8.0R slots=1 IS : n=  66 win%= 36.4 expR=+0.369 avgW=2.19 avgL=-0.67 trades/wk=0.63
+v32 TP= 8.0R slots=1 OOS: n=  44 win%= 38.6 expR=+0.659 avgW=2.77 avgL=-0.67 trades/wk=0.65
+v32 TP= 8.0R slots=2 ALL: n= 213 win%= 33.8 expR=+0.318 avgW=2.30 avgL=-0.69 trades/wk=1.24
+v32 TP= 8.0R slots=2 IS : n= 136 win%= 32.4 expR=+0.191 avgW=2.05 avgL=-0.70 trades/wk=1.30
+v32 TP= 8.0R slots=2 OOS: n=  80 win%= 37.5 expR=+0.550 avgW=2.62 avgL=-0.69 trades/wk=1.18
+v32 TP=10.0R slots=1 ALL: n= 109 win%= 35.8 expR=+0.535 avgW=2.73 avgL=-0.69 trades/wk=0.63
+v32 TP=10.0R slots=1 IS : n=  65 win%= 36.9 expR=+0.407 avgW=2.26 avgL=-0.68 trades/wk=0.62
+v32 TP=10.0R slots=1 OOS: n=  45 win%= 35.6 expR=+0.712 avgW=3.30 avgL=-0.72 trades/wk=0.67
+v32 TP=10.0R slots=2 ALL: n= 212 win%= 32.1 expR=+0.331 avgW=2.52 avgL=-0.70 trades/wk=1.23
+v32 TP=10.0R slots=2 IS : n= 134 win%= 31.3 expR=+0.171 avgW=2.07 avgL=-0.70 trades/wk=1.28
+v32 TP=10.0R slots=2 OOS: n=  81 win%= 34.6 expR=+0.611 avgW=3.13 avgL=-0.72 trades/wk=1.20
