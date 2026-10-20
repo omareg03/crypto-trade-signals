@@ -55,7 +55,7 @@
 > **5 minimum trading days** (a day counts only if you CLOSE ≥1 trade with notional ≥5% of initial balance that moved ≥1% of trade value) |
 > 40% of profit target per day cap (excess doesn't count; losing days count in full) | account closes after 30 days with no trades.
 - **5K Funded (xt0ipo8)**: **TERMINATED (Oct 14, 2026)**. Failed due to Max Exposure violation ($1,844.40 Initial Margin vs $1,250.00 cap) triggered when a manual 28-LTC short executed at 1x leverage and stacked on top of the bot's OP position.
-- **10K Challenge (28xldlj1SuSy25GQWEMm0E, Bybit Simulator)**: **ACTIVE (SOLE SURVIVING HYRO ACCOUNT)**. (The old Cleo ID 8pbmfu0 is EXPIRED — never use it.) Floor $9,400 | Target $11,000 (+$1,000) | Trading Days: 2 of 5 completed. Bot v4.0.0 at 0.40% risk ($40), MAX_POSITIONS_EVAL = 1. No manual trading allowed on this account.
+- **10K Challenge (28xldlj1SuSy25GQWEMm0E, Bybit Simulator)**: **ACTIVE (SOLE SURVIVING HYRO ACCOUNT)**. (The old Cleo ID 8pbmfu0 is EXPIRED — never use it.) Floor $9,400 | Target $11,000 (+$1,000) | Trading Days: 3 of 5 completed (Oct 19). Bot v3.3.0 at 0.40% risk ($40), MAX_POSITIONS_EVAL = 1. No manual trading allowed on this account.
 - **10K Challenge (pd2x19s / 5IvGsKwh)**: TERMINATED (Oct 12, 2026). Failed due to daily drawdown give-back breach under v3.1 backwards-kline bug.
 - **Funding Pips Challenge**: ACTIVE. Web dashboard is configured for **$5K 2-Step Flex** (likely the user's account; phase/balance still unconfirmed). Forex Trend Following only.
   Official 2-Step Flex rules (fundingpips.com, checked Oct 4, 2026): P1 target 10%, P2 target 8%, **daily loss 4%**, max loss 12% static,
