@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Omar's 2020 Malibu OTD & F&I Pocket Command Center</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card: #131b2e;
+      --card-alt: #0f1524;
+      --border: #243049;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --blue: #3b82f6;
+      --green: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 12px;
+      line-height: 1.4;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      margin-bottom: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    }
+    h1 { font-size: 1.05rem; font-weight: 700; margin-bottom: 2px; }
+    h2 { font-size: 0.92rem; font-weight: 700; margin-bottom: 8px; color: #e2e8f0; }
+    .sub { font-size: 0.78rem; color: var(--muted); }
+    .presets {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .btn {
+      background: var(--card-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 6px;
+      font-size: 0.76rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn:active, .btn.active {
+      border-color: var(--blue);
+      background: rgba(59, 130, 246, 0.18);
+      color: #93c5fd;
+    }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .kpi {
+      background: var(--card-alt);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 6px;
+      text-align: center;
+    }
+    .kpi-label { font-size: 0.72rem; color: var(--muted); }
+    .kpi-val { font-size: 1.3rem; font-weight: 800; margin-top: 3px; }
+    .kpi-sub { font-size: 0.7rem; margin-top: 2px; color: var(--muted); }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .rose { color: var(--rose); }
+
+    .slider-group { margin-bottom: 12px; }
+    .slider-head {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      margin-bottom: 4px;
+    }
+    .slider-val { font-weight: 700; color: #93c5fd; }
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      accent-color: var(--blue);
+      cursor: pointer;
+    }
+    .slider-ticks {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .trade-pills {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .trade-pills .btn { flex: 1; padding: 5px 4px; font-size: 0.72rem; }
+
+    .breakdown {
+      background: var(--card-alt);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.8rem;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .row:last-child { border-bottom: none; font-weight: 700; font-size: 0.88rem; padding-top: 6px; }
+
+    textarea {
+      width: 100%;
+      height: 118px;
+      background: var(--card-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 0.78rem;
+      font-family: inherit;
+      margin-top: 6px;
+      resize: vertical;
+    }
+    .copy-btn {
+      width: 100%;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin-top: 8px;
+      cursor: pointer;
+    }
+    .ref-box {
+      font-size: 0.76rem;
+      color: var(--muted);
+      display: grid;
+      gap: 4px;
+    }
+    .ref-box b { color: var(--text); }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h1>Omar's 2020 Malibu OTD & Payment Calculator</h1>
+    <div class="sub">100% Offline-Ready • FL 6% Net Tax + $25 Surtax + $165 Plate Transfer/11-27 Renewal</div>
+    <div class="presets">
+      <button class="btn" id="pTarget">Target Deal ($8,900)</button>
+      <button class="btn" id="pFifth">5th Gear ($9,450)</button>
+      <button class="btn" id="pGoSmart">Go Smart ($9,795)</button>
+    </div>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="kpi-label">Total Financed (OTD)</div>
+      <div class="kpi-val" id="outFinanced">$7,959</div>
+      <div class="kpi-sub" id="outTaxTag">Inc. $630 tax & plate</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Monthly Payment</div>
+      <div class="kpi-val green" id="outMonthly">$183/mo</div>
+      <div class="kpi-sub green" id="outStatus">UNDER $200/MO!</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Cash Down Due</div>
+      <div class="kpi-val green">$0</div>
+      <div class="kpi-sub">End Balance: $0</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="slider-group">
+      <div class="slider-head">
+        <span>1. Vehicle Selling Price ($)</span>
+        <span class="slider-val" id="vCar">$8,900</span>
+      </div>
+      <input type="range" id="sCar" min="7800" max="10500" step="50" value="8900" />
+      <div class="slider-ticks"><span>$7,800</span><span>$9,450</span><span>$9,795</span><span>$10,500</span></div>
+    </div>
+
+    <div class="slider-group">
+      <div class="slider-head">
+        <span>2. Dealer Doc / E-File Fee ($)</span>
+        <span class="slider-val" id="vFee">$0 (Included)</span>
+      </div>
+      <input type="range" id="sFee" min="0" max="1200" step="50" value="0" />
+      <div class="slider-ticks"><span>$0 (Absorbed)</span><span>$399</span><span>$799</span><span>$1,200</span></div>
+    </div>
+
+    <div class="slider-group">
+      <div class="slider-head">
+        <span>3. 2014 Accent Trade-In Allowance ($)</span>
+        <span class="slider-val" id="vTrade">$1,570</span>
+      </div>
+      <input type="range" id="sTrade" min="1000" max="2500" step="10" value="1570" />
+      <div class="slider-ticks"><span>$1,000 (Floor)</span><span>$1,570 (KBB)</span><span>$2,000</span><span>$2,500 (Push)</span></div>
+      <div class="trade-pills">
+        <button class="btn" data-trade="1570">$1,570 KBB Lock</button>
+        <button class="btn" data-trade="1800">$1,800 Push</button>
+        <button class="btn" data-trade="2000">$2,000 Max Push</button>
+      </div>
+    </div>
+
+    <div class="slider-group">
+      <div class="slider-head">
+        <span>4. Approved APR (%)</span>
+        <span class="slider-val" id="vApr">18.5%</span>
+      </div>
+      <input type="range" id="sApr" min="12" max="25" step="0.25" value="18.5" />
+      <div class="slider-ticks"><span>12%</span><span>18.5% (Go Smart Est.)</span><span>21%</span><span>25%</span></div>
+    </div>
+
+    <div class="slider-group" style="margin-bottom:4px;">
+      <div class="slider-head">
+        <span>5. Loan Term</span>
+        <span class="slider-val" id="vTerm">72 Months (6 Yrs)</span>
+      </div>
+      <div class="presets" style="margin-top:4px;">
+        <button class="btn term-btn" data-term="60">60 Mos (5Y)</button>
+        <button class="btn term-btn active" data-term="72">72 Mos (6Y)</button>
+        <button class="btn term-btn" data-term="84">84 Mos (7Y)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Exact Florida Buyer's Order Line Items</h2>
+    <div class="breakdown">
+      <div class="row"><span>Vehicle Price + Dealer Fee:</span><span id="bGross">$8,900</span></div>
+      <div class="row"><span>Less 2014 Accent Trade-In Credit:</span><span id="bTrade" class="green">-$1,570</span></div>
+      <div class="row"><span>Net Taxable Difference (FL Tax Shield):</span><span id="bNet">$7,330</span></div>
+      <div class="row"><span>FL 6% Sales Tax + $25 Orange Co. Surtax:</span><span id="bTax">+$465</span></div>
+      <div class="row"><span>FL Metal Plate Transfer + 11-27 Renewal + Doc Stamps:</span><span id="bTag">+$165</span></div>
+      <div class="row"><span>TOTAL AMOUNT FINANCED ($0 Cash Down):</span><span id="bTotal">$7,960</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Auto-Generated Lunch-Break SMS Counter-Offer</h2>
+    <div class="sub">Updates automatically from your sliders above — tap Copy and paste into your text thread!</div>
+    <textarea id="smsBox" readonly></textarea>
+    <button class="copy-btn" id="copyBtn">Copy SMS Counter-Offer</button>
+  </div>
+
+  <div class="card">
+    <h2>Omar's Locked-In Reference IDs & Numbers</h2>
+    <div class="ref-box">
+      <div><b>Capital One Pre-Qual Ref #:</b> 338120827 (Exeter, Westlake, American Credit)</div>
+      <div><b>KBB $1,570 Instant Cash Offer ID:</b> 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b</div>
+      <div><b>#1 Go Smart Kissimmee (Black Malibu):</b> Stock #K6524 | VIN: 1G1ZB5ST1LF001321 | Text: (689) 210-0768 / (833) 908-4240</div>
+      <div><b>#2 Fifth Gear Auburndale (Dark Blue):</b> Stock #108574 | VIN: 1G1ZB5ST6LF108574 | Text: (863) 656-1014</div>
+      <div><b>5 References:</b> 1. Mary Carmen Garcia (787-525-3053) | 2. Arianna Mitchell (407-710-2278) | 3. Ashanti Nibbs (689-238-5175) | 4. Sandra Reyes (864-741-7933) | 5. Amanda (787-209-4692)</div>
+    </div>
+  </div>
+
+  <script>
+    let term = 72;
+    const sCar = document.getElementById('sCar');
+    const sFee = document.getElementById('sFee');
+    const sTrade = document.getElementById('sTrade');
+    const sApr = document.getElementById('sApr');
+
+    function calc() {
+      const car = parseFloat(sCar.value);
+      const fee = parseFloat(sFee.value);
+      const trade = parseFloat(sTrade.value);
+      const apr = parseFloat(sApr.value);
+      const gross = car + fee;
+      const net = Math.max(0, gross - trade);
+      const tax = Math.round(net * 0.06) + 25;
+      const tag = 165;
+      const otd = net + tax + tag;
+
+      const r = (apr / 100) / 12;
+      const pmt = Math.round(otd * (r * Math.pow(1 + r, term)) / (Math.pow(1 + r, term) - 1));
+
+      document.getElementById('vCar').textContent = '$' + car.toLocaleString();
+      document.getElementById('vFee').textContent = fee === 0 ? '$0 (Included)' : '$' + fee.toLocaleString();
+      document.getElementById('vTrade').textContent = '$' + trade.toLocaleString();
+      document.getElementById('vApr').textContent = apr.toFixed(2).replace(/\.00$/, '.0') + '%';
+      document.getElementById('vTerm').textContent = term + ' Months (' + (term/12) + ' Yrs)';
+
+      document.getElementById('outFinanced').textContent = '$' + otd.toLocaleString();
+      document.getElementById('outTaxTag').textContent = 'Inc. $' + (tax + tag) + ' tax & plate';
+
+      const mEl = document.getElementById('outMonthly');
+      const sEl = document.getElementById('outStatus');
+      mEl.textContent = '$' + pmt + '/mo';
+      if (pmt <= 200) {
+        mEl.className = 'kpi-val green';
+        sEl.className = 'kpi-sub green';
+        sEl.textContent = 'UNDER $200/MO GOAL!';
+      } else if (pmt <= 215) {
+        mEl.className = 'kpi-val amber';
+        sEl.className = 'kpi-sub amber';
+        sEl.textContent = 'LOW $200s (CLOSE)';
+      } else {
+        mEl.className = 'kpi-val rose';
+        sEl.className = 'kpi-sub rose';
+        sEl.textContent = 'TOO HIGH — CUT FEE/PRICE';
+      }
+
+      document.getElementById('bGross').textContent = '$' + gross.toLocaleString();
+      document.getElementById('bTrade').textContent = '-$' + trade.toLocaleString();
+      document.getElementById('bNet').textContent = '$' + net.toLocaleString();
+      document.getElementById('bTax').textContent = '+$' + tax.toLocaleString();
+      document.getElementById('bTag').textContent = '+$' + tag.toLocaleString();
+      document.getElementById('bTotal').textContent = '$' + otd.toLocaleString() + ' ($' + pmt + '/mo)';
+
+      document.getElementById('smsBox').value =
+        'Thanks for sending that over! I am reviewing your worksheet against my other 2020 Malibu offer right now. With my Capital One Pre-Qualification (Ref #338120827), my running 2014 Hyundai Accent GLS trade-in at $' + trade.toLocaleString() + ' (KBB ID: 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b), and FL metal plate transfer, if your manager locks in $' + gross.toLocaleString() + ' including dealer fee (Net difference $' + net.toLocaleString() + ' + FL 6% tax/surtax & plate transfer = ~$' + otd.toLocaleString() + ' Total Amount Financed with $0.00 cash down at ~$' + pmt + '/mo), we have a deal and I will come sign!';
+    }
+
+    [sCar, sFee, sTrade, sApr].forEach(el => el.addEventListener('input', calc));
+
+    document.querySelectorAll('.term-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        term = parseInt(btn.getAttribute('data-term'), 10);
+        document.querySelectorAll('.term-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        calc();
+      });
+    });
+
+    document.querySelectorAll('[data-trade]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        sTrade.value = btn.getAttribute('data-trade');
+        calc();
+      });
+    });
+
+    document.getElementById('pTarget').addEventListener('click', () => {
+      sCar.value = 8900; sFee.value = 0; sTrade.value = 1570; sApr.value = 18.5; calc();
+    });
+    document.getElementById('pFifth').addEventListener('click', () => {
+      sCar.value = 9450; sFee.value = 0; sTrade.value = 1570; sApr.value = 18.5; calc();
+    });
+    document.getElementById('pGoSmart').addEventListener('click', () => {
+      sCar.value = 9795; sFee.value = 0; sTrade.value = 1570; sApr.value = 18.5; calc();
+    });
+
+    document.getElementById('copyBtn').addEventListener('click', () => {
+      const box = document.getElementById('smsBox');
+      box.select();
+      navigator.clipboard.writeText(box.value);
+      const btn = document.getElementById('copyBtn');
+      btn.textContent = 'Copied to Clipboard!';
+      setTimeout(() => { btn.textContent = 'Copy SMS Counter-Offer'; }, 2000);
+    });
+
+    calc();
+  </script>
+</body>
+</html>
