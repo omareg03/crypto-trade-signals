@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Omar's 2020 Malibu OTD & F&I Pocket Command Center</title>
+  <title>Omar's 2020 Malibu OTD, F&I & 6-Mo Refi Command Center</title>
   <style>
     :root {
       --bg: #0b0f19;
@@ -16,6 +16,7 @@
       --green: #10b981;
       --amber: #f59e0b;
       --rose: #f43f5e;
+      --purple: #8b5cf6;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -23,7 +24,7 @@
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       padding: 12px;
-      line-height: 1.4;
+      line-height: 1.42;
       max-width: 680px;
       margin: 0 auto;
     }
@@ -35,8 +36,27 @@
       margin-bottom: 12px;
       box-shadow: 0 4px 16px rgba(0,0,0,0.35);
     }
+    .card-refi {
+      border-color: rgba(16, 185, 129, 0.45);
+      background: linear-gradient(180deg, #112229 0%, #131b2e 100%);
+    }
     h1 { font-size: 1.05rem; font-weight: 700; margin-bottom: 2px; }
-    h2 { font-size: 0.92rem; font-weight: 700; margin-bottom: 8px; color: #e2e8f0; }
+    h2 { font-size: 0.92rem; font-weight: 700; margin-bottom: 8px; color: #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .badge {
+      font-size: 0.68rem;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-weight: 700;
+      background: rgba(16, 185, 129, 0.18);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+      white-space: nowrap;
+    }
+    .badge-amber {
+      background: rgba(245, 158, 11, 0.18);
+      color: #fcd34d;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+    }
     .sub { font-size: 0.78rem; color: var(--muted); }
     .presets {
       display: grid;
@@ -50,15 +70,21 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 8px 6px;
-      font-size: 0.76rem;
+      font-size: 0.74rem;
       font-weight: 600;
       cursor: pointer;
       text-align: center;
+      transition: all 0.15s ease;
     }
     .btn:active, .btn.active {
       border-color: var(--blue);
       background: rgba(59, 130, 246, 0.18);
       color: #93c5fd;
+    }
+    .btn.btn-danger.active {
+      border-color: var(--amber);
+      background: rgba(245, 158, 11, 0.18);
+      color: #fcd34d;
     }
     .kpi-grid {
       display: grid;
@@ -73,12 +99,13 @@
       padding: 10px 6px;
       text-align: center;
     }
-    .kpi-label { font-size: 0.72rem; color: var(--muted); }
-    .kpi-val { font-size: 1.3rem; font-weight: 800; margin-top: 3px; }
-    .kpi-sub { font-size: 0.7rem; margin-top: 2px; color: var(--muted); }
+    .kpi-label { font-size: 0.71rem; color: var(--muted); }
+    .kpi-val { font-size: 1.28rem; font-weight: 800; margin-top: 3px; }
+    .kpi-sub { font-size: 0.69rem; margin-top: 2px; color: var(--muted); }
     .green { color: var(--green); }
     .amber { color: var(--amber); }
     .rose { color: var(--rose); }
+    .blue { color: #93c5fd; }
 
     .slider-group { margin-bottom: 12px; }
     .slider-head {
@@ -97,41 +124,63 @@
     .slider-ticks {
       display: flex;
       justify-content: space-between;
-      font-size: 0.7rem;
+      font-size: 0.68rem;
       color: var(--muted);
       margin-top: 2px;
     }
-    .trade-pills {
+    .pill-row {
       display: flex;
-      gap: 6px;
+      gap: 5px;
       margin-top: 6px;
     }
-    .trade-pills .btn { flex: 1; padding: 5px 4px; font-size: 0.72rem; }
+    .pill-row .btn { flex: 1; padding: 6px 3px; font-size: 0.7rem; }
+
+    .trade-banner {
+      display: none;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      line-height: 1.38;
+    }
+    .trade-banner.keep {
+      display: block;
+      background: rgba(245, 158, 11, 0.14);
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      color: #fde68a;
+    }
+    .trade-banner.lowball {
+      display: block;
+      background: rgba(244, 63, 94, 0.15);
+      border: 1px solid rgba(244, 63, 94, 0.5);
+      color: #fecdd3;
+    }
 
     .breakdown {
       background: var(--card-alt);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 10px 12px;
-      font-size: 0.8rem;
+      font-size: 0.79rem;
     }
     .row {
       display: flex;
       justify-content: space-between;
       padding: 4px 0;
       border-bottom: 1px solid rgba(255,255,255,0.05);
+      gap: 8px;
     }
-    .row:last-child { border-bottom: none; font-weight: 700; font-size: 0.88rem; padding-top: 6px; }
+    .row:last-child { border-bottom: none; font-weight: 700; font-size: 0.86rem; padding-top: 6px; }
 
     textarea {
       width: 100%;
-      height: 118px;
+      height: 122px;
       background: var(--card-alt);
       color: var(--text);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 8px;
-      font-size: 0.78rem;
+      font-size: 0.77rem;
       font-family: inherit;
       margin-top: 6px;
       resize: vertical;
@@ -143,47 +192,107 @@
       border: none;
       border-radius: 8px;
       padding: 10px;
-      font-size: 0.85rem;
+      font-size: 0.84rem;
       font-weight: 700;
       margin-top: 8px;
       cursor: pointer;
+    }
+    .copy-btn-alt {
+      background: #1e293b;
+      border: 1px solid var(--border);
+      color: #93c5fd;
+      margin-top: 6px;
+      padding: 8px;
+      font-size: 0.78rem;
     }
     .ref-box {
       font-size: 0.76rem;
       color: var(--muted);
       display: grid;
-      gap: 4px;
+      gap: 6px;
     }
     .ref-box b { color: var(--text); }
+    .ref-section {
+      background: var(--card-alt);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 8px 10px;
+    }
+    .step-list {
+      margin-top: 10px;
+      display: grid;
+      gap: 7px;
+      font-size: 0.76rem;
+      color: #cbd5e1;
+    }
+    .step-item {
+      background: rgba(15, 21, 36, 0.85);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .step-item b { color: #34d399; }
+
+    .check-list {
+      margin-top: 8px;
+      display: grid;
+      gap: 6px;
+    }
+    .check-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      background: var(--card-alt);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.76rem;
+      color: #cbd5e1;
+      cursor: pointer;
+      user-select: none;
+    }
+    .check-item input[type="checkbox"] {
+      margin-top: 2px;
+      width: 16px;
+      height: 16px;
+      accent-color: var(--green);
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .check-item.checked {
+      border-color: rgba(16, 185, 129, 0.45);
+      background: rgba(16, 185, 129, 0.08);
+    }
+    .check-item b { color: var(--text); }
   </style>
 </head>
 <body>
 
   <div class="card">
-    <h1>Omar's 2020 Malibu OTD & Payment Calculator</h1>
-    <div class="sub">100% Offline-Ready • FL 6% Net Tax + $25 Surtax + $165 Plate Transfer/11-27 Renewal</div>
+    <h1>Omar's 2020 Malibu OTD &amp; Payment Command Center</h1>
+    <div class="sub">100% Offline-Ready • FL 6% Net Tax + $25 Orange Co. Surtax + $165 Plate Transfer/11-27 Renewal/Doc Stamps</div>
     <div class="presets">
-      <button class="btn" id="pTarget">Target Deal ($8,900)</button>
-      <button class="btn" id="pFifth">5th Gear ($9,450)</button>
-      <button class="btn" id="pGoSmart">Go Smart ($9,795)</button>
+      <button class="btn preset-btn active" id="pTarget">Target Deal ($8,900)</button>
+      <button class="btn preset-btn" id="pFifth">5th Gear ($9,450)</button>
+      <button class="btn preset-btn" id="pGoSmart">Go Smart ($9,795)</button>
     </div>
   </div>
 
   <div class="kpi-grid">
     <div class="kpi">
       <div class="kpi-label">Total Financed (OTD)</div>
-      <div class="kpi-val" id="outFinanced">$7,959</div>
-      <div class="kpi-sub" id="outTaxTag">Inc. $630 tax & plate</div>
+      <div class="kpi-val" id="outFinanced">$7,960</div>
+      <div class="kpi-sub" id="outTaxTag">Inc. $630 tax &amp; plate</div>
     </div>
     <div class="kpi">
       <div class="kpi-label">Monthly Payment</div>
-      <div class="kpi-val green" id="outMonthly">$183/mo</div>
-      <div class="kpi-sub green" id="outStatus">UNDER $200/MO!</div>
+      <div class="kpi-val green" id="outMonthly">$184/mo</div>
+      <div class="kpi-sub green" id="outStatus">UNDER $200/MO GOAL!</div>
     </div>
     <div class="kpi">
       <div class="kpi-label">Cash Down Due</div>
       <div class="kpi-val green">$0</div>
-      <div class="kpi-sub">End Balance: $0</div>
+      <div class="kpi-sub" id="outAfterRefi">6-Mo Refi: ~$146/mo</div>
     </div>
   </div>
 
@@ -193,8 +302,8 @@
         <span>1. Vehicle Selling Price ($)</span>
         <span class="slider-val" id="vCar">$8,900</span>
       </div>
-      <input type="range" id="sCar" min="7800" max="10500" step="50" value="8900" />
-      <div class="slider-ticks"><span>$7,800</span><span>$9,450</span><span>$9,795</span><span>$10,500</span></div>
+      <input type="range" id="sCar" min="7800" max="10500" step="5" value="8900" />
+      <div class="slider-ticks"><span>$7,800</span><span>$8,900 (Target)</span><span>$9,450 (5th)</span><span>$9,795 (GoSmart)</span><span>$10,500</span></div>
     </div>
 
     <div class="slider-group">
@@ -202,36 +311,44 @@
         <span>2. Dealer Doc / E-File Fee ($)</span>
         <span class="slider-val" id="vFee">$0 (Included)</span>
       </div>
-      <input type="range" id="sFee" min="0" max="1200" step="50" value="0" />
-      <div class="slider-ticks"><span>$0 (Absorbed)</span><span>$399</span><span>$799</span><span>$1,200</span></div>
+      <input type="range" id="sFee" min="0" max="1200" step="5" value="0" />
+      <div class="slider-ticks"><span>$0 (Absorbed)</span><span>$399</span><span>$699</span><span>$999+</span></div>
+      <div class="pill-row">
+        <button class="btn fee-pill active" data-fee="0">$0 Absorbed</button>
+        <button class="btn fee-pill" data-fee="399">$399 Cap</button>
+        <button class="btn fee-pill" data-fee="699">$699 Fee</button>
+        <button class="btn fee-pill" data-fee="899">$899 Fee</button>
+      </div>
     </div>
 
     <div class="slider-group">
       <div class="slider-head">
         <span>3. 2014 Accent Trade-In Allowance ($)</span>
-        <span class="slider-val" id="vTrade">$1,570</span>
+        <span class="slider-val" id="vTrade">$1,570 (KBB Lock)</span>
       </div>
-      <input type="range" id="sTrade" min="1000" max="2500" step="10" value="1570" />
-      <div class="slider-ticks"><span>$1,000 (Floor)</span><span>$1,570 (KBB)</span><span>$2,000</span><span>$2,500 (Push)</span></div>
-      <div class="trade-pills">
-        <button class="btn" data-trade="1570">$1,570 KBB Lock</button>
-        <button class="btn" data-trade="1800">$1,800 Push</button>
-        <button class="btn" data-trade="2000">$2,000 Max Push</button>
+      <input type="range" id="sTrade" min="0" max="2500" step="10" value="1570" />
+      <div class="slider-ticks"><span>$0 (Keep Car!)</span><span>$1,300 (Floor)</span><span>$1,570 (KBB)</span><span>$2,500 (Push)</span></div>
+      <div class="pill-row">
+        <button class="btn trade-pill btn-danger" data-trade="0">$0 (Keep Accent)</button>
+        <button class="btn trade-pill" data-trade="1300">$1,300 Floor</button>
+        <button class="btn trade-pill active" data-trade="1570">$1,570 KBB</button>
+        <button class="btn trade-pill" data-trade="1800">$1,800+ Push</button>
       </div>
+      <div id="tradeBanner" class="trade-banner"></div>
     </div>
 
     <div class="slider-group">
       <div class="slider-head">
-        <span>4. Approved APR (%)</span>
+        <span>4. Initial Approved APR (%)</span>
         <span class="slider-val" id="vApr">18.5%</span>
       </div>
       <input type="range" id="sApr" min="12" max="25" step="0.25" value="18.5" />
-      <div class="slider-ticks"><span>12%</span><span>18.5% (Go Smart Est.)</span><span>21%</span><span>25%</span></div>
+      <div class="slider-ticks"><span>12%</span><span>18.5% (CapOne/GoSmart Est.)</span><span>21%</span><span>25%</span></div>
     </div>
 
     <div class="slider-group" style="margin-bottom:4px;">
       <div class="slider-head">
-        <span>5. Loan Term</span>
+        <span>5. Initial Loan Term</span>
         <span class="slider-val" id="vTerm">72 Months (6 Yrs)</span>
       </div>
       <div class="presets" style="margin-top:4px;">
@@ -243,64 +360,278 @@
   </div>
 
   <div class="card">
-    <h2>Exact Florida Buyer's Order Line Items</h2>
+    <h2>
+      <span>Exact Florida Buyer's Order Line Items</span>
+      <span class="badge">Fla. Stat. § 212.05</span>
+    </h2>
     <div class="breakdown">
       <div class="row"><span>Vehicle Price + Dealer Fee:</span><span id="bGross">$8,900</span></div>
-      <div class="row"><span>Less 2014 Accent Trade-In Credit:</span><span id="bTrade" class="green">-$1,570</span></div>
+      <div class="row"><span id="bTradeLabel">Less 2014 Accent Trade-In (152,963 mi):</span><span id="bTrade" class="green">-$1,570</span></div>
       <div class="row"><span>Net Taxable Difference (FL Tax Shield):</span><span id="bNet">$7,330</span></div>
-      <div class="row"><span>FL 6% Sales Tax + $25 Orange Co. Surtax:</span><span id="bTax">+$465</span></div>
-      <div class="row"><span>FL Metal Plate Transfer + 11-27 Renewal + Doc Stamps:</span><span id="bTag">+$165</span></div>
-      <div class="row"><span>TOTAL AMOUNT FINANCED ($0 Cash Down):</span><span id="bTotal">$7,960</span></div>
+      <div class="row"><span>FL 6% Sales Tax + Orange Co. Surtax ($25 cap):</span><span id="bTax">+$465</span></div>
+      <div class="row"><span>FL Plate Transfer + 11-27 Renewal ($137) + Doc Stamps ($28):</span><span id="bTag">+$165</span></div>
+      <div class="row"><span>TOTAL AMOUNT FINANCED ($0 Cash Down):</span><span id="bTotal">$7,960 ($184/mo)</span></div>
+    </div>
+  </div>
+
+  <!-- 6-MONTH CREDIT BOOST & REFINANCE CALCULATOR + PLAN -->
+  <div class="card card-refi">
+    <h2>
+      <span>6-Month Credit Boost &amp; Auto Refinance Plan</span>
+      <span class="badge">Phase 2 Strategy</span>
+    </h2>
+    <div class="sub" style="margin-bottom:10px;">
+      Pay 6 consecutive on-time monthly payments + clear collections, then refinance the remaining principal with an Orlando Credit Union ($0 prepayment penalty):
+    </div>
+
+    <div class="kpi-grid" style="margin-bottom:10px;">
+      <div class="kpi">
+        <div class="kpi-label">Month-6 Payoff Bal</div>
+        <div class="kpi-val blue" id="outRefiBal">$7,580</div>
+        <div class="kpi-sub" id="outPrincipalPaid">-$380 principal paid</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">New Refi Payment</div>
+        <div class="kpi-val green" id="outRefiPmt">$146/mo</div>
+        <div class="kpi-sub green" id="outRefiDrop">Saves $38/mo!</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Interest Saved</div>
+        <div class="kpi-val green" id="outRefiSaved">$2,509</div>
+        <div class="kpi-sub" id="outRefiTermSub">At 8.9% for 66 mos</div>
+      </div>
+    </div>
+
+    <div class="slider-group" style="margin-bottom:8px;">
+      <div class="slider-head">
+        <span>Target Month-6 Credit Union Refi APR (%)</span>
+        <span class="slider-val" id="vRefiApr">8.9%</span>
+      </div>
+      <input type="range" id="sRefiApr" min="6.9" max="12.9" step="0.2" value="8.9" />
+      <div class="slider-ticks"><span>6.9% (700+)</span><span>7.9% (680+)</span><span>8.9% (Target)</span><span>10.9% (650+)</span><span>12.9%</span></div>
+    </div>
+
+    <div class="slider-group" style="margin-bottom:8px;">
+      <div class="slider-head">
+        <span>Refinance Term at Month 6</span>
+        <span class="slider-val" id="vRefiTerm">66 Months (Matches Remaining Time)</span>
+      </div>
+      <div class="presets" style="margin-top:4px;">
+        <button class="btn refi-term-btn" data-rterm="60">60 Mos (Finish 6M Early)</button>
+        <button class="btn refi-term-btn active" data-rterm="66">66 Mos (Same End Date)</button>
+        <button class="btn refi-term-btn" data-rterm="72">72 Mos (Lowest Pmt)</button>
+      </div>
+    </div>
+
+    <div class="step-list">
+      <div class="step-item">
+        <b>1. Day 1 Contract Check (Monday Nov 2):</b> Verify Truth-in-Lending box on Exeter / Westlake / ACA contract says <b>Simple Interest</b> with <b>$0 Prepayment Penalty</b> (standard in FL).
+      </div>
+      <div class="step-item">
+        <b>2. Months 1–6 Credit Surge (Target 660–680+ FICO):</b> Turn on <b>AutoPay</b> for 6 straight on-time car payments (35% of FICO) • Keep credit card statement utilization <b>&lt; 10%</b> (30% of FICO) • Dispute inaccurate items (`FCRA § 611`) &amp; negotiate written <b>Pay-for-Delete (PFD)</b> settlements (`30%–40%` lump sum) on remaining collections.
+      </div>
+      <div class="step-item">
+        <b>3. Month 6–7 Orlando Credit Union Refi:</b> Your payoff (`~$7,580`) vs. Malibu retail value (`~$9,800+`) gives a prime <b>~77% LTV</b> (&lt;10 yrs, &lt;120K mi). Apply in one 14-day window at <b>FAIRWINDS Credit Union</b>, <b>Addition Financial</b>, <b>VyStar</b>, and <b>Capital One Auto Refi / PenFed</b> to drop APR to <b>7.9%–10.9%</b>!
+      </div>
+    </div>
+  </div>
+
+  <!-- DAD'S OLD-SCHOOL LOT INSPECTION + OBD2 CHECKLIST -->
+  <div class="card">
+    <h2>
+      <span>Dad's Old-School Lot Inspection + OBD2 Checklist</span>
+      <span class="badge badge-amber" id="checkProgress">0 / 7 Checked</span>
+    </h2>
+    <div class="sub">Tap each item as you inspect the 2020 Malibu on the lot BEFORE signing or handing over your Accent keys:</div>
+    <div class="check-list" id="lotChecklist">
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>1. Trunk Floor — 16" Compact Spare Tire &amp; Emergency Jack Kit:</b> Lift the trunk carpet! Confirm the <b>16" steel compact spare (`T125/80R16`)</b> is bolted down &amp; inflated, plus the <b>scissor jack, jack handle &amp; lug wrench</b> are in the foam tray (listed on Page 2 of Go Smart's `#K6524` brochure!). If missing, make the manager pull a set from another Malibu before signing.</span>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>2. Engine Oil Dipstick &amp; Cap (Dad's #1 Rule):</b> Pull the yellow dipstick &amp; unscrew the oil fill cap. Oil must be between crosshatches and clean amber/brown — <b>ZERO milky/frothy tan "milkshake"</b> (which signals a blown head gasket/coolant leak).</span>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>3. Coolant Surge Tank (Clear Reservoir, Passenger Side):</b> Verify clean <b>pink/orange GM Dex-Cool</b> at the cold fill line — no rusty brown sludge and no oily film floating on top.</span>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>4. Brake Fluid Reservoir (Driver Firewall):</b> Clear to light-amber fluid near the MAX line (not pitch-black or low) + firm brake pedal feel (no hard/stiff vacuum pump issue).</span>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>5. Front Turbo &amp; Valve Cover Dry Check:</b> Look at the front exhaust heat shield and top valve cover — no wet oil leaks or burnt-oil smell after idling.</span>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>6. Backpack OBD2 Scanner (Malibu Only!):</b> Plug into the Malibu port by your left knee (`0 Stored / 0 Pending Codes` + <b>I/M Readiness Monitors = Ready/Complete</b>). <i>Never plug into or hit Erase on your 2014 Accent!</i></span>
+      </label>
+      <label class="check-item">
+        <input type="checkbox" class="lot-chk" />
+        <span><b>7. Road Test + "Shift to Park" Check:</b> Smooth `0–45 MPH` CVT acceleration, ice-cold A/C, backup camera works, and putting shifter in <b>Park (`P`)</b> shuts off cleanly without beeping <i>"Shift to Park."</i></span>
+      </label>
     </div>
   </div>
 
   <div class="card">
-    <h2>Auto-Generated Lunch-Break SMS Counter-Offer</h2>
-    <div class="sub">Updates automatically from your sliders above — tap Copy and paste into your text thread!</div>
+    <h2>
+      <span>SMS &amp; Anti-Lowball Script Generator</span>
+      <span class="badge">Zero Games Mode</span>
+    </h2>
+    <div class="sub">Switch between Counter-Offer, Morning OTD Request, or the Anti-Lowball "Keep My Accent" Script:</div>
+    <div class="pill-row" style="margin-bottom:4px;">
+      <button class="btn sms-mode-btn active" id="modeCounter">1. Counter-Offer</button>
+      <button class="btn sms-mode-btn" id="modeOpener">2. Morning Opener</button>
+      <button class="btn sms-mode-btn btn-danger" id="modeNoTrade">3. Lowball / Keep Accent</button>
+    </div>
     <textarea id="smsBox" readonly></textarea>
-    <button class="copy-btn" id="copyBtn">Copy SMS Counter-Offer</button>
+    <button class="copy-btn" id="copyBtn">Copy Script to Clipboard</button>
   </div>
 
   <div class="card">
-    <h2>Omar's Locked-In Reference IDs & Numbers</h2>
+    <h2>Omar's Locked-In Reference IDs, Dealers &amp; 5 Contacts</h2>
     <div class="ref-box">
-      <div><b>Capital One Pre-Qual Ref #:</b> 338120827 (Exeter, Westlake, American Credit)</div>
-      <div><b>KBB $1,570 Instant Cash Offer ID:</b> 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b</div>
-      <div><b>#1 Go Smart Kissimmee (Black Malibu):</b> Stock #K6524 | VIN: 1G1ZB5ST1LF001321 | Text: (689) 210-0768 / (833) 908-4240</div>
-      <div><b>#2 Fifth Gear Auburndale (Dark Blue):</b> Stock #108574 | VIN: 1G1ZB5ST6LF108574 | Text: (863) 656-1014</div>
-      <div><b>5 References:</b> 1. Mary Carmen Garcia (787-525-3053) | 2. Arianna Mitchell (407-710-2278) | 3. Ashanti Nibbs (689-238-5175) | 4. Sandra Reyes (864-741-7933) | 5. Amanda (787-209-4692)</div>
+      <div class="ref-section">
+        <div><b>Capital One Pre-Qual Ref #:</b> 338120827 (Valid thru 11/30/2026)</div>
+        <div><b>Approved Lenders:</b> 1. Exeter Finance • 2. Westlake Financial • 3. American Credit Acceptance ($4,000 min financed, &lt;10 yrs, &lt;120K mi)</div>
+        <div><b>KBB $1,570 Instant Cash Offer ID:</b> 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b (Valid thru 11/6/2026)</div>
+        <div><b>Trade-In / Outside Sale Weapon:</b> 2014 Hyundai Accent GLS Sedan 4D • <b>152,963 exact miles</b> • Clean FL Title in hand • Cold A/C, Tints, 0 Lights • <b>Floor = $1,300+</b> (If they lowball, keep the Accent &amp; cash $1,570 at an official KBB Buying Center like Mullinax/AutoNation or sell on FB Marketplace/OfferUp for <b>$2,000–$2,500 cash</b>!)</div>
+      </div>
+
+      <div class="ref-section">
+        <div><b>#1 Target — Go Smart Car Sales (Kissimmee):</b></div>
+        <div>• <b>Vehicle:</b> Black 2020 Chevy Malibu LS w/1LS • <b>Stock #K6524</b> • <b>VIN:</b> 1G1ZB5ST1LF001321 • <b>107,175 mi</b> • 29/36 MPG</div>
+        <div>• <b>Price:</b> $9,795 ($802 below $10,597 CarStory avg; CapOne widget: $191/mo @ 18.47% / 72m w/ $1,500 trade before tax/tag)</div>
+        <div>• <b>Location:</b> 2770 N Orange Blossom Trail, Kissimmee, FL 34744 (Mon–Sat 10 AM – 7 PM) | Sister Store: 13192 W Colonial Dr, Winter Garden (9 AM – 7 PM)</div>
+        <div>• <b>Podium SMS:</b> (689) 210-0768 | <b>Text:</b> (833) 908-4240 | <b>Call:</b> (407) 720-3700</div>
+      </div>
+
+      <div class="ref-section">
+        <div><b>#2 Backup — Fifth Gear Auto Group Inc. (Auburndale):</b></div>
+        <div>• <b>Vehicle:</b> Dark Blue 2020 Chevy Malibu LS Sedan 4D • <b>Stock #108574</b> • <b>VIN:</b> 1G1ZB5ST6LF108574 • <b>109,569 mi</b></div>
+        <div>• <b>Price:</b> $9,450 * (Fees Not Disclosed — get itemized OTD sheet via text before driving!)</div>
+        <div>• <b>Location:</b> 3 Tennessee Ln / 902 Magnolia Ave, Auburndale, FL 33823 (Mon–Sat 9 AM – 7 PM)</div>
+        <div>• <b>Call/Text:</b> (863) 656-1014 / (863) 662-3483 • <b>Web:</b> fifth-auto.com</div>
+        <div style="color:var(--rose);margin-top:2px;"><b>❌ Blacklisted:</b> Lions Pre-Owned Cars (4201 W Colonial Dr • VIN: 1G1ZD5ST7LF106651 — Oct 31 bait-and-switch)</div>
+      </div>
+
+      <div class="ref-section" id="refsBlock">
+        <div><b>5 Personal References (Exeter / Westlake F&amp;I Requirement):</b></div>
+        <div>1. <b>Mary Carmen Garcia</b> (Sister) — (787) 525-3053 — NW 14th Street, Miami Gardens, FL 33053</div>
+        <div>2. <b>Arianna Mitchell</b> (Friend / Co-Worker) — (407) 710-2278 — 1610 Peach Ave, Sanford, FL 32771</div>
+        <div>3. <b>Ashanti Nibbs</b> (Friend) — (689) 238-5175 — Lake Mary, FL 32746</div>
+        <div>4. <b>Sandra Reyes</b> (Friend) — (864) 741-7933 — Decatur, GA 30030</div>
+        <div>5. <b>Amanda</b> (Aunt) — (787) 209-4692 — San Juan, PR 00928</div>
+        <button class="copy-btn copy-btn-alt" id="copyRefsBtn">Copy All 5 References for F&amp;I Manager</button>
+      </div>
     </div>
   </div>
 
   <script>
     let term = 72;
+    let refiTerm = 66;
+    let smsMode = 'counter';
+
     const sCar = document.getElementById('sCar');
     const sFee = document.getElementById('sFee');
     const sTrade = document.getElementById('sTrade');
     const sApr = document.getElementById('sApr');
+    const sRefiApr = document.getElementById('sRefiApr');
+
+    function copyTextWithFallback(text, btn, defaultLabel) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          btn.textContent = 'Copied to Clipboard!';
+          setTimeout(() => { btn.textContent = defaultLabel; }, 2000);
+        }).catch(() => fallbackCopy(text, btn, defaultLabel));
+      } else {
+        fallbackCopy(text, btn, defaultLabel);
+      }
+    }
+
+    function fallbackCopy(text, btn, defaultLabel) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) {}
+      document.body.removeChild(ta);
+      btn.textContent = 'Copied to Clipboard!';
+      setTimeout(() => { btn.textContent = defaultLabel; }, 2000);
+    }
 
     function calc() {
       const car = parseFloat(sCar.value);
       const fee = parseFloat(sFee.value);
       const trade = parseFloat(sTrade.value);
       const apr = parseFloat(sApr.value);
+      const refiApr = parseFloat(sRefiApr.value);
+
       const gross = car + fee;
       const net = Math.max(0, gross - trade);
-      const tax = Math.round(net * 0.06) + 25;
+      // Fla. Stat. 212.05: 6% state sales tax on net diff + Orange County 0.5% surtax capped at first $5,000 ($25 max)
+      const flStateTax = Math.round(net * 0.06);
+      const orangeSurtax = net > 0 ? Math.min(25, Math.round(net * 0.005)) : 0;
+      const tax = flStateTax + orangeSurtax;
+      // $137 FL metal plate transfer + 11-27 renewal + ~$28 FL doc stamps ($0.35 per $100 financed)
       const tag = 165;
       const otd = net + tax + tag;
 
       const r = (apr / 100) / 12;
-      const pmt = Math.round(otd * (r * Math.pow(1 + r, term)) / (Math.pow(1 + r, term) - 1));
+      const pmtExact = r > 0
+        ? otd * (r * Math.pow(1 + r, term)) / (Math.pow(1 + r, term) - 1)
+        : otd / term;
+      const pmt = Math.round(pmtExact);
+
+      // 6-Month Amortization & Refinance Math (Simple Interest, 6 payments made)
+      const monthsPaid = 6;
+      const bal6Exact = r > 0
+        ? otd * (Math.pow(1 + r, term) - Math.pow(1 + r, monthsPaid)) / (Math.pow(1 + r, term) - 1)
+        : otd * (1 - monthsPaid / term);
+      const bal6 = Math.round(bal6Exact);
+      const principalPaid6 = Math.max(0, otd - bal6);
+
+      const remMonthsOrig = Math.max(1, term - monthsPaid);
+      const remInterestOrig = Math.max(0, (pmtExact * remMonthsOrig) - bal6Exact);
+
+      const rRefi = (refiApr / 100) / 12;
+      const refiPmtExact = rRefi > 0
+        ? bal6Exact * (rRefi * Math.pow(1 + rRefi, refiTerm)) / (Math.pow(1 + rRefi, refiTerm) - 1)
+        : bal6Exact / refiTerm;
+      const refiPmt = Math.round(refiPmtExact);
+      const totalInterestRefi = Math.max(0, (refiPmtExact * refiTerm) - bal6Exact);
+      const interestSaved = Math.max(0, Math.round(remInterestOrig - totalInterestRefi));
+      const monthlyDrop = Math.max(0, pmt - refiPmt);
 
       document.getElementById('vCar').textContent = '$' + car.toLocaleString();
       document.getElementById('vFee').textContent = fee === 0 ? '$0 (Included)' : '$' + fee.toLocaleString();
-      document.getElementById('vTrade').textContent = '$' + trade.toLocaleString();
+      document.getElementById('vTrade').textContent = trade === 0
+        ? '$0 (KEEP ACCENT / NO TRADE)'
+        : '$' + trade.toLocaleString();
       document.getElementById('vApr').textContent = apr.toFixed(2).replace(/\.00$/, '.0') + '%';
-      document.getElementById('vTerm').textContent = term + ' Months (' + (term/12) + ' Yrs)';
+      document.getElementById('vTerm').textContent = term + ' Months (' + (term / 12) + ' Yrs)';
+
+      // Trade-In Banner Logic
+      const tb = document.getElementById('tradeBanner');
+      if (trade === 0) {
+        tb.className = 'trade-banner keep';
+        tb.innerHTML = '<b>KEEP ACCENT / NO-TRADE MODE:</b> You keep your 2014 Accent and sell it outside for <b>$1,570</b> (official KBB Buying Center) or <b>$2,000–$2,500 cash</b> on FB Marketplace/OfferUp! Dealer must finance <b>$' + otd.toLocaleString() + '</b> with <b>$0 Trade &amp; $0 Cash Down</b>—or you walk!';
+      } else if (trade < 1300) {
+        tb.className = 'trade-banner lowball';
+        tb.innerHTML = '<b>⚠️ LOWBALL WARNING (&lt;$1,300):</b> Do NOT give them your 2014 Accent for $' + trade.toLocaleString() + '! Tap <b>"$0 (Keep Accent)"</b> above to pull your car off the deal and sell it outside for $1,570–$2,500 cash!';
+      } else {
+        tb.className = 'trade-banner';
+        tb.innerHTML = '';
+      }
 
       document.getElementById('outFinanced').textContent = '$' + otd.toLocaleString();
       document.getElementById('outTaxTag').textContent = 'Inc. $' + (tax + tag) + ' tax & plate';
+      document.getElementById('outAfterRefi').textContent = '6-Mo Refi: ~$' + refiPmt + '/mo';
 
       const mEl = document.getElementById('outMonthly');
       const sEl = document.getElementById('outStatus');
@@ -309,28 +640,65 @@
         mEl.className = 'kpi-val green';
         sEl.className = 'kpi-sub green';
         sEl.textContent = 'UNDER $200/MO GOAL!';
-      } else if (pmt <= 215) {
+      } else if (pmt <= 225) {
         mEl.className = 'kpi-val amber';
         sEl.className = 'kpi-sub amber';
-        sEl.textContent = 'LOW $200s (CLOSE)';
+        sEl.textContent = trade === 0 ? 'NO-TRADE + KEEP ACCENT!' : 'LOW $200s (CLOSE)';
       } else {
         mEl.className = 'kpi-val rose';
         sEl.className = 'kpi-sub rose';
-        sEl.textContent = 'TOO HIGH — CUT FEE/PRICE';
+        sEl.textContent = trade === 0 ? 'NO-TRADE (KEEP ACCENT)' : 'TOO HIGH — CUT FEE/PRICE';
       }
 
       document.getElementById('bGross').textContent = '$' + gross.toLocaleString();
-      document.getElementById('bTrade').textContent = '-$' + trade.toLocaleString();
+      document.getElementById('bTradeLabel').textContent = trade === 0
+        ? '2014 Accent Trade-In (Keeping Car to Sell Outside!):'
+        : 'Less 2014 Accent Trade-In (152,963 mi):';
+      document.getElementById('bTrade').textContent = trade === 0 ? '$0 (Kept)' : '-$' + trade.toLocaleString();
       document.getElementById('bNet').textContent = '$' + net.toLocaleString();
       document.getElementById('bTax').textContent = '+$' + tax.toLocaleString();
       document.getElementById('bTag').textContent = '+$' + tag.toLocaleString();
       document.getElementById('bTotal').textContent = '$' + otd.toLocaleString() + ' ($' + pmt + '/mo)';
 
-      document.getElementById('smsBox').value =
-        'Thanks for sending that over! I am reviewing your worksheet against my other 2020 Malibu offer right now. With my Capital One Pre-Qualification (Ref #338120827), my running 2014 Hyundai Accent GLS trade-in at $' + trade.toLocaleString() + ' (KBB ID: 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b), and FL metal plate transfer, if your manager locks in $' + gross.toLocaleString() + ' including dealer fee (Net difference $' + net.toLocaleString() + ' + FL 6% tax/surtax & plate transfer = ~$' + otd.toLocaleString() + ' Total Amount Financed with $0.00 cash down at ~$' + pmt + '/mo), we have a deal and I will come sign!';
+      // Update 6-Month Refinance UI
+      document.getElementById('vRefiApr').textContent = refiApr.toFixed(1) + '%';
+      const refiTermLabel = refiTerm === (term - 6)
+        ? refiTerm + ' Months (Matches Remaining Time)'
+        : refiTerm + ' Months (' + (refiTerm / 12).toFixed(1).replace(/\.0$/, '') + ' Yrs)';
+      document.getElementById('vRefiTerm').textContent = refiTermLabel;
+      document.getElementById('outRefiBal').textContent = '$' + bal6.toLocaleString();
+      document.getElementById('outPrincipalPaid').textContent = '-$' + principalPaid6.toLocaleString() + ' principal paid';
+      document.getElementById('outRefiPmt').textContent = '$' + refiPmt + '/mo';
+      document.getElementById('outRefiDrop').textContent = 'Saves $' + monthlyDrop + '/mo!';
+      document.getElementById('outRefiSaved').textContent = '$' + interestSaved.toLocaleString();
+      document.getElementById('outRefiTermSub').textContent = 'At ' + refiApr.toFixed(1) + '% for ' + refiTerm + ' mos';
+
+      // Sync active states on pills
+      document.querySelectorAll('.trade-pill').forEach(b => {
+        b.classList.toggle('active', parseInt(b.getAttribute('data-trade'), 10) === trade);
+      });
+      document.querySelectorAll('.fee-pill').forEach(b => {
+        b.classList.toggle('active', parseInt(b.getAttribute('data-fee'), 10) === fee);
+      });
+      document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+      if (car === 8900 && fee === 0) document.getElementById('pTarget').classList.add('active');
+      else if (car === 9450 && fee === 0) document.getElementById('pFifth').classList.add('active');
+      else if (car === 9795 && fee === 0) document.getElementById('pGoSmart').classList.add('active');
+
+      // Update SMS Box
+      if (smsMode === 'noTrade' || (smsMode === 'counter' && trade === 0)) {
+        document.getElementById('smsBox').value =
+          'If you won\'t match my $1,570 KBB voucher (or at least $1,300+) on my 2014 Hyundai Accent, take my Accent off the worksheet completely—I am keeping my car and selling it outside. With my Capital One Pre-Qualification (Ref #338120827 — Exeter, Westlake & American Credit), if your manager locks in $' + gross.toLocaleString() + ' including dealer fee with $0 trade-in and $0.00 cash down (~$' + otd.toLocaleString() + ' Total Amount Financed at ~$' + pmt + '/mo), we have a deal—otherwise I will pass!';
+      } else if (smsMode === 'counter') {
+        document.getElementById('smsBox').value =
+          'Thanks for sending that over! I am reviewing your worksheet against my other 2020 Malibu offer right now. With my Capital One Pre-Qualification (Ref #338120827), my running 2014 Hyundai Accent GLS trade-in at $' + trade.toLocaleString() + ' (KBB ID: 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b), and FL metal plate transfer, if your manager locks in $' + gross.toLocaleString() + ' including dealer fee (Net difference $' + net.toLocaleString() + ' + FL 6% tax/surtax & plate transfer = ~$' + otd.toLocaleString() + ' Total Amount Financed with $0.00 cash down at ~$' + pmt + '/mo), we have a deal and I will come sign after 6 PM!';
+      } else {
+        document.getElementById('smsBox').value =
+          'Hi! I am following up on the 2020 Chevy Malibu LS. I am at work until 6 PM today, have my Capital One Auto Navigator Pre-Qualification (Ref #338120827 — approved with Exeter, Westlake & American Credit), my clean-title 2014 Hyundai Accent GLS trade-in (152,963 mi) with a $1,570 KBB Instant Cash Offer (ID: 3b46a0e1-f8c3-42c1-8f0f-cdaf9fa3f17b), and my Florida metal plate to transfer. Can you text me a photo of the itemized Out-The-Door Buyer\'s Order showing $0 cash down so I can review it on my lunch break and drive straight over at 6 PM to sign?';
+      }
     }
 
-    [sCar, sFee, sTrade, sApr].forEach(el => el.addEventListener('input', calc));
+    [sCar, sFee, sTrade, sApr, sRefiApr].forEach(el => el.addEventListener('input', calc));
 
     document.querySelectorAll('.term-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -341,33 +709,94 @@
       });
     });
 
-    document.querySelectorAll('[data-trade]').forEach(btn => {
+    document.querySelectorAll('.refi-term-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        refiTerm = parseInt(btn.getAttribute('data-rterm'), 10);
+        document.querySelectorAll('.refi-term-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        calc();
+      });
+    });
+
+    document.querySelectorAll('.trade-pill').forEach(btn => {
       btn.addEventListener('click', () => {
         sTrade.value = btn.getAttribute('data-trade');
         calc();
       });
     });
 
+    document.querySelectorAll('.fee-pill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        sFee.value = btn.getAttribute('data-fee');
+        calc();
+      });
+    });
+
     document.getElementById('pTarget').addEventListener('click', () => {
-      sCar.value = 8900; sFee.value = 0; sTrade.value = 1570; sApr.value = 18.5; calc();
+      sCar.value = 8900; sFee.value = 0; sApr.value = 18.5; calc();
     });
     document.getElementById('pFifth').addEventListener('click', () => {
-      sCar.value = 9450; sFee.value = 0; sTrade.value = 1570; sApr.value = 18.5; calc();
+      sCar.value = 9450; sFee.value = 0; sApr.value = 18.5; calc();
     });
     document.getElementById('pGoSmart').addEventListener('click', () => {
-      sCar.value = 9795; sFee.value = 0; sTrade.value = 1570; sApr.value = 18.5; calc();
+      sCar.value = 9795; sFee.value = 0; sApr.value = 18.5; calc();
     });
+
+    function setSmsMode(mode) {
+      smsMode = mode;
+      document.querySelectorAll('.sms-mode-btn').forEach(b => b.classList.remove('active'));
+      if (mode === 'counter') document.getElementById('modeCounter').classList.add('active');
+      else if (mode === 'opener') document.getElementById('modeOpener').classList.add('active');
+      else if (mode === 'noTrade') document.getElementById('modeNoTrade').classList.add('active');
+      calc();
+    }
+
+    document.getElementById('modeCounter').addEventListener('click', () => setSmsMode('counter'));
+    document.getElementById('modeOpener').addEventListener('click', () => setSmsMode('opener'));
+    document.getElementById('modeNoTrade').addEventListener('click', () => {
+      sTrade.value = 0;
+      setSmsMode('noTrade');
+    });
+
+    // Dad's Old-School Lot Inspection Checklist logic
+    const lotChks = document.querySelectorAll('.lot-chk');
+    const checkProgress = document.getElementById('checkProgress');
+    function updateChecklist() {
+      let count = 0;
+      lotChks.forEach(chk => {
+        const parent = chk.closest('.check-item');
+        if (chk.checked) {
+          count++;
+          if (parent) parent.classList.add('checked');
+        } else {
+          if (parent) parent.classList.remove('checked');
+        }
+      });
+      checkProgress.textContent = count === lotChks.length
+        ? count + ' / ' + lotChks.length + ' PASSED!'
+        : count + ' / ' + lotChks.length + ' Checked';
+      checkProgress.className = count === lotChks.length ? 'badge' : 'badge badge-amber';
+    }
+    lotChks.forEach(chk => chk.addEventListener('change', updateChecklist));
 
     document.getElementById('copyBtn').addEventListener('click', () => {
       const box = document.getElementById('smsBox');
-      box.select();
-      navigator.clipboard.writeText(box.value);
-      const btn = document.getElementById('copyBtn');
-      btn.textContent = 'Copied to Clipboard!';
-      setTimeout(() => { btn.textContent = 'Copy SMS Counter-Offer'; }, 2000);
+      copyTextWithFallback(box.value, document.getElementById('copyBtn'), 'Copy Script to Clipboard');
+    });
+
+    document.getElementById('copyRefsBtn').addEventListener('click', () => {
+      const refsText =
+        'Personal References for Omar Garcia:\n' +
+        '1. Mary Carmen Garcia (Sister) - (787) 525-3053 - NW 14th Street, Miami Gardens, FL 33053\n' +
+        '2. Arianna Mitchell (Friend / Co-Worker) - (407) 710-2278 - 1610 Peach Ave, Sanford, FL 32771\n' +
+        '3. Ashanti Nibbs (Friend) - (689) 238-5175 - Lake Mary, FL 32746\n' +
+        '4. Sandra Reyes (Friend) - (864) 741-7933 - Decatur, GA 30030\n' +
+        '5. Amanda (Aunt) - (787) 209-4692 - San Juan, PR 00928';
+      copyTextWithFallback(refsText, document.getElementById('copyRefsBtn'), 'Copy All 5 References for F&I Manager');
     });
 
     calc();
+    updateChecklist();
   </script>
 </body>
 </html>
